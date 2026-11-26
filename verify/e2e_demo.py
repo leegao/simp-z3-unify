@@ -1,6 +1,6 @@
 from collections.abc import Callable
 
-from .ast_nodes import (
+from simp.ast_nodes import (
     ArrLoad,
     ArrStoreStmt,
     Assign,
@@ -22,15 +22,16 @@ from .ast_nodes import (
     WhileStmt,
     typecheck_program,
 )
-from .passes import (
+from simp.passes import (
     buggy_opt_pass,
     const_fold_pass,
     cse_pass,
     dce_pass,
     mem_licm_pass,
 )
+from simp.types import BOOL, FLOAT, INT, TArray, TPtr
+
 from .symexec import SymbolicExecutor
-from .types import BOOL, FLOAT, INT, TArray, TPtr
 from .unifier import verify_equiv_bu_wlau
 
 

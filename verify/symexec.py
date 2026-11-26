@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import z3
 
-from .ast_nodes import (
+from simp.ast_nodes import (
     ArrLoad,
     ArrStoreExpr,
     ArrStoreStmt,
@@ -38,7 +38,7 @@ from .ast_nodes import (
     Var,
     WhileStmt,
 )
-from .types import BOOL, FLOAT, INT, TArray, TPtr, TPyObj, TString, TStruct, Type
+from simp.types import BOOL, FLOAT, INT, TArray, TPtr, TPyObj, TString, TStruct, Type
 
 # Shared uninterpreted Z3 sort for all host-Python objects
 PYOBJ_SORT = z3.DeclareSort("PyObj")

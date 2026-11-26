@@ -1,3 +1,6 @@
+from verify.symexec import SymbolicExecutor
+from verify.unifier import verify_equiv_bu_wlau
+
 from .ast_nodes import (
     Assign,
     BinOp,
@@ -21,9 +24,7 @@ from .ast_nodes import (
     typecheck_program,
 )
 from .passes import const_fold_pass, cse_pass, dce_pass
-from .symexec import SymbolicExecutor
 from .types import BOOL, INT, STR
-from .unifier import verify_equiv_bu_wlau
 
 
 def build_self_hosted_simp_parser() -> Program:

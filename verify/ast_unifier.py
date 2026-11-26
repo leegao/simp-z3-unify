@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 import z3
 
-from .ast_nodes import (
+from simp.ast_nodes import (
     ArrLoad,
     ArrStoreExpr,
     ArrStoreStmt,
@@ -38,10 +38,11 @@ from .ast_nodes import (
     Var,
     WhileStmt,
 )
-from .symexec import SymbolicExecutor
-from .types import (
+from simp.types import (
     INT,
 )
+
+from .symexec import SymbolicExecutor
 
 
 @dataclass
@@ -397,8 +398,8 @@ class ASTTreeUnifier:
 
 
 if __name__ == "__main__":
-    from .passes import const_fold_pass, cse_pass, dce_pass
-    from .self_parser import build_self_hosted_simp_parser
+    from simp.passes import const_fold_pass, cse_pass, dce_pass
+    from simp.self_parser import build_self_hosted_simp_parser
 
     base = build_self_hosted_simp_parser()
     opt = dce_pass(cse_pass(const_fold_pass(base)))
@@ -417,7 +418,7 @@ if __name__ == "__main__":
     # Negative check: mutate first `+` to `-` in next_token
     import copy
 
-    from .passes import _map_stmt_exprs
+    from simp.passes import _map_stmt_exprs
     bug = copy.deepcopy(base)
     done = [False]
     def mut_plus(e):
@@ -429,4 +430,4 @@ if __name__ == "__main__":
     u_bug = ASTTreeUnifier(base, bug, "parse_assign_expr")
     r_bug = u_bug.verify()
     print(f"=== Variant B Negative Test (Mutated Parser len('let') 3 -> 4): {r_bug.z3_status.upper()} ({r_bug.elapsed_ms:.2f} ms) ===")
-    assert not r_bug.equivalent and r_bug.z3_status == "sat" 
+    assert not r_bug.equivalent and r_bug.z3_status == "sat"
