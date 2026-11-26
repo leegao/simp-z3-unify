@@ -1,13 +1,44 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+
 import z3
-from .types import BOOL, FLOAT, INT, STR, TArray, TPtr, TPyObj, TString, TStruct, Type
+
 from .ast_nodes import (
-    ArrLoad, ArrStoreExpr, ArrStoreStmt, Assign, BinOp, BuiltinCall, Const,
-    Expr, FuncCall, FuncDecl, IfStmt, IteExpr, LetDecl, Program, PtrDeref,
-    PtrOffset, PtrStoreStmt, PyAttr, PyBox, PyCall, PyMethodCall, PyModuleRef,
-    PyUnbox, ReturnStmt, StrConcat, StrLen, StrSubstr, StructInit, FieldGet, FieldSet, Stmt, UnOp, Var, WhileStmt,
+    ArrLoad,
+    ArrStoreExpr,
+    ArrStoreStmt,
+    Assign,
+    BinOp,
+    BuiltinCall,
+    Const,
+    Expr,
+    FieldGet,
+    FieldSet,
+    FuncCall,
+    FuncDecl,
+    IfStmt,
+    IteExpr,
+    LetDecl,
+    Program,
+    PtrDeref,
+    PtrOffset,
+    PtrStoreStmt,
+    PyAttr,
+    PyBox,
+    PyCall,
+    PyMethodCall,
+    PyModuleRef,
+    PyUnbox,
+    ReturnStmt,
+    Stmt,
+    StrConcat,
+    StrLen,
+    StrSubstr,
+    StructInit,
+    UnOp,
+    Var,
+    WhileStmt,
 )
+from .types import BOOL, FLOAT, INT, TArray, TPtr, TPyObj, TString, TStruct, Type
 
 # Shared uninterpreted Z3 sort for all host-Python objects
 PYOBJ_SORT = z3.DeclareSort("PyObj")
@@ -33,8 +64,8 @@ def z3_sort_of(ty: Type) -> z3.SortRef:
 
 @dataclass
 class SymState:
-    env: Dict[str, object]
-    ret_val: Optional[z3.ExprRef] = None
+    env: dict[str, object]
+    ret_val: z3.ExprRef | None = None
     has_returned: z3.BoolRef = None  # type: ignore
 
     def copy(self) -> "SymState":
@@ -57,15 +88,15 @@ class SymbolicExecutor:
     def __init__(self, prog: Program, rec_depth: int = 4):
         self.prog = prog
         self.rec_depth = rec_depth
-        self.import_map: Dict[str, str] = {imp.alias: imp.module for imp in prog.imports}
-        self.uf_builtins: Dict[str, z3.FuncDeclRef] = {
+        self.import_map: dict[str, str] = {imp.alias: imp.module for imp in prog.imports}
+        self.uf_builtins: dict[str, z3.FuncDeclRef] = {
             name: z3.Function(f"uf_{name}", z3.RealSort(), z3.RealSort())
             for name in ("exp", "log", "sin", "cos", "sqrt")
         }
-        self.uf_rec_summaries: Dict[str, z3.FuncDeclRef] = {}
-        self.uf_py_rigid: Dict[Tuple, z3.FuncDeclRef] = {}
-        self.py_mod_consts: Dict[str, z3.ExprRef] = {}
-        self.struct_z3: Dict[str, Tuple[z3.DatatypeSortRef, z3.FuncDeclRef, Dict[str, z3.FuncDeclRef], Tuple]] = {}
+        self.uf_rec_summaries: dict[str, z3.FuncDeclRef] = {}
+        self.uf_py_rigid: dict[tuple, z3.FuncDeclRef] = {}
+        self.py_mod_consts: dict[str, z3.ExprRef] = {}
+        self.struct_z3: dict[str, tuple[z3.DatatypeSortRef, z3.FuncDeclRef, dict[str, z3.FuncDeclRef], tuple]] = {}
         self._init_structs()
 
     def share_uf_tables_from(self, other: "SymbolicExecutor"):
@@ -101,15 +132,15 @@ class SymbolicExecutor:
             )
         return self.uf_rec_summaries[fn.name]
 
-    def _get_py_uf(self, key: Tuple, fname: str, arg_sorts: List[z3.SortRef], ret_sort: z3.SortRef) -> z3.FuncDeclRef:
+    def _get_py_uf(self, key: tuple, fname: str, arg_sorts: list[z3.SortRef], ret_sort: z3.SortRef) -> z3.FuncDeclRef:
         if key not in self.uf_py_rigid:
             self.uf_py_rigid[key] = z3.Function(fname, *arg_sorts, ret_sort)
         return self.uf_py_rigid[key]
 
-    def make_initial_inputs(self, entry_name: str) -> Tuple[Dict[str, object], List[z3.BoolRef]]:
+    def make_initial_inputs(self, entry_name: str) -> tuple[dict[str, object], list[z3.BoolRef]]:
         fn = self.prog.get_func(entry_name)
-        env: Dict[str, object] = {}
-        preconds: List[z3.BoolRef] = []
+        env: dict[str, object] = {}
+        preconds: list[z3.BoolRef] = []
         for pname, pty in fn.params:
             if isinstance(pty, TPtr):
                 heap_name = f"__heap_{pname}"
@@ -135,9 +166,9 @@ class SymbolicExecutor:
     def lower_function(
         self,
         fn_name: str,
-        init_env: Dict[str, object],
+        init_env: dict[str, object],
         depth: int = 0,
-    ) -> Tuple[z3.ExprRef, Dict[str, object]]:
+    ) -> tuple[z3.ExprRef, dict[str, object]]:
         fn = self.prog.get_func(fn_name)
         st = SymState(dict(init_env), ret_val=None, has_returned=z3.BoolVal(False))
         st = self._exec_stmts(fn.body, st, depth)
@@ -206,7 +237,7 @@ class SymbolicExecutor:
             args = [self._eval_expr(a, st, depth) for a in e.args]
             if depth >= self.rec_depth:
                 return self._get_rec_uf(callee)(*args)
-            sub_env: Dict[str, object] = {}
+            sub_env: dict[str, object] = {}
             for (pname, _), aval in zip(callee.params, args):
                 sub_env[pname] = aval
             ret, _ = self.lower_function(e.name, sub_env, depth + 1)
@@ -292,7 +323,7 @@ class SymbolicExecutor:
         return v_then
 
     def _merge_states(self, cond: z3.BoolRef, st_t: SymState, st_e: SymState) -> SymState:
-        merged_env: Dict[str, object] = {}
+        merged_env: dict[str, object] = {}
         keys = set(st_t.env.keys()) & set(st_e.env.keys())
         for k in keys:
             merged_env[k] = self._merge_val(cond, st_t.env[k], st_e.env[k])
@@ -300,7 +331,7 @@ class SymbolicExecutor:
         hr = z3.If(cond, st_t.has_returned, st_e.has_returned)
         return SymState(merged_env, ret, hr)
 
-    def _exec_stmts(self, stmts: List[Stmt], st: SymState, depth: int) -> SymState:
+    def _exec_stmts(self, stmts: list[Stmt], st: SymState, depth: int) -> SymState:
         for stmt in stmts:
             if isinstance(stmt, LetDecl):
                 val = self._eval_expr(stmt.init, st, depth)

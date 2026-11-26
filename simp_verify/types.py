@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Dict, List
 
 
 class Type:
@@ -87,7 +86,7 @@ STR = TString()
 VOID = TVoid()
 
 # Transcendental builtins: float -> float (modeled as opaque UFs in Z3)
-BUILTIN_SIGS: Dict[str, tuple[List[Type], Type]] = {
+BUILTIN_SIGS: dict[str, tuple[list[Type], Type]] = {
     "exp": ([FLOAT], FLOAT),
     "log": ([FLOAT], FLOAT),
     "sin": ([FLOAT], FLOAT),

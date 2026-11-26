@@ -1,14 +1,44 @@
 import copy
-from typing import Dict, List, Optional, Set, Tuple
-from .types import BOOL, FLOAT, INT, STR, Type
+
 from .ast_nodes import (
-    ArrLoad, ArrStoreExpr, ArrStoreStmt, Assign, BinOp, BuiltinCall, Const,
-    Expr, FuncCall, FuncDecl, IfStmt, IteExpr, LetDecl, Program, PtrDeref,
-    PtrOffset, PtrStoreStmt, PyAttr, PyBox, PyCall, PyMethodCall, PyModuleRef, PyUnbox, ReturnStmt, StrConcat, StrLen, StrSubstr, StructInit, FieldGet, FieldSet, Stmt, UnOp, Var, WhileStmt,
+    ArrLoad,
+    ArrStoreExpr,
+    ArrStoreStmt,
+    Assign,
+    BinOp,
+    BuiltinCall,
+    Const,
+    Expr,
+    FieldGet,
+    FieldSet,
+    FuncCall,
+    IfStmt,
+    IteExpr,
+    LetDecl,
+    Program,
+    PtrDeref,
+    PtrOffset,
+    PtrStoreStmt,
+    PyAttr,
+    PyBox,
+    PyCall,
+    PyMethodCall,
+    PyModuleRef,
+    PyUnbox,
+    ReturnStmt,
+    Stmt,
+    StrConcat,
+    StrLen,
+    StrSubstr,
+    StructInit,
+    UnOp,
+    Var,
+    WhileStmt,
 )
+from .types import BOOL, FLOAT, INT, STR
 
 
-def _expr_vars(e: Expr) -> Set[str]:
+def _expr_vars(e: Expr) -> set[str]:
     if isinstance(e, Var):
         return {e.name}
     if isinstance(e, Const):
@@ -51,7 +81,7 @@ def _expr_vars(e: Expr) -> Set[str]:
     if isinstance(e, StrSubstr):
         return _expr_vars(e.s) | _expr_vars(e.offset) | _expr_vars(e.length)
     if isinstance(e, StructInit):
-        s: Set[str] = set()
+        s: set[str] = set()
         for _, v in e.field_vals:
             s |= _expr_vars(v)
         return s
@@ -64,17 +94,17 @@ def _expr_vars(e: Expr) -> Set[str]:
     if isinstance(e, (PyAttr, PyBox, PyUnbox)):
         return _expr_vars(e.obj if isinstance(e, PyAttr) else e.expr)
     if isinstance(e, PyCall):
-        s: Set[str] = _expr_vars(e.callee)
+        s: set[str] = _expr_vars(e.callee)
         for a in e.args:
             s |= _expr_vars(a)
         return s
     if isinstance(e, PyMethodCall):
-        s: Set[str] = _expr_vars(e.obj)
+        s: set[str] = _expr_vars(e.obj)
         for a in e.args:
             s |= _expr_vars(a)
         return s
     if isinstance(e, (BuiltinCall, FuncCall)):
-        s: Set[str] = set()
+        s: set[str] = set()
         for a in e.args:
             s |= _expr_vars(a)
         return s
@@ -198,8 +228,8 @@ def _map_expr(e: Expr, fn) -> Expr:
     return fn(e)
 
 
-def _map_stmt_exprs(stmts: List[Stmt], fn) -> List[Stmt]:
-    out: List[Stmt] = []
+def _map_stmt_exprs(stmts: list[Stmt], fn) -> list[Stmt]:
+    out: list[Stmt] = []
     for st in stmts:
         if isinstance(st, LetDecl):
             out.append(LetDecl(st.name, st.ty, _map_expr(st.init, fn)))
@@ -327,8 +357,8 @@ def const_fold_pass(prog: Program) -> Program:
     return p
 
 
-def _prune_const_ifs(stmts: List[Stmt]) -> List[Stmt]:
-    out: List[Stmt] = []
+def _prune_const_ifs(stmts: list[Stmt]) -> list[Stmt]:
+    out: list[Stmt] = []
     for st in stmts:
         if isinstance(st, IfStmt):
             if isinstance(st.cond, Const) and st.cond.ty == BOOL:
@@ -354,19 +384,19 @@ def cse_pass(prog: Program) -> Program:
     return p
 
 
-def _invalidate(avail: Dict[Expr, str], mutated_var: str) -> Dict[Expr, str]:
+def _invalidate(avail: dict[Expr, str], mutated_var: str) -> dict[Expr, str]:
     return {e: v for e, v in avail.items() if mutated_var not in _expr_vars(e) and v != mutated_var}
 
 
-def _cse_replace(e: Expr, avail: Dict[Expr, str]) -> Expr:
+def _cse_replace(e: Expr, avail: dict[Expr, str]) -> Expr:
     if e in avail:
         return Var(avail[e])
     return _map_expr(e, lambda sub: Var(avail[sub]) if sub in avail else sub)
 
 
-def _cse_block(stmts: List[Stmt], avail_in: Dict[Expr, str]) -> List[Stmt]:
+def _cse_block(stmts: list[Stmt], avail_in: dict[Expr, str]) -> list[Stmt]:
     avail = dict(avail_in)
-    out: List[Stmt] = []
+    out: list[Stmt] = []
     for st in stmts:
         if isinstance(st, LetDecl):
             new_init = _cse_replace(st.init, avail)
@@ -411,8 +441,8 @@ def mem_licm_pass(prog: Program) -> Program:
     return p
 
 
-def _mutated_in_stmts(stmts: List[Stmt]) -> Set[str]:
-    mut: Set[str] = set()
+def _mutated_in_stmts(stmts: list[Stmt]) -> set[str]:
+    mut: set[str] = set()
     for st in stmts:
         if isinstance(st, (LetDecl, Assign)):
             mut.add(st.name)
@@ -425,9 +455,9 @@ def _mutated_in_stmts(stmts: List[Stmt]) -> Set[str]:
     return mut
 
 
-def _mem_licm_block(stmts: List[Stmt], known_stores: Dict[Tuple[str, Expr], Expr], counter: List[int]) -> List[Stmt]:
+def _mem_licm_block(stmts: list[Stmt], known_stores: dict[tuple[str, Expr], Expr], counter: list[int]) -> list[Stmt]:
     stores = dict(known_stores)
-    out: List[Stmt] = []
+    out: list[Stmt] = []
 
     def fwd(e: Expr) -> Expr:
         if isinstance(e, ArrLoad) and isinstance(e.arr, Var):
@@ -464,8 +494,8 @@ def _mem_licm_block(stmts: List[Stmt], known_stores: Dict[Tuple[str, Expr], Expr
         elif isinstance(st, WhileStmt):
             # LICM: hoist pure non-trivial BuiltinCall subexpressions whose vars are not mutated in loop
             mut = _mutated_in_stmts(st.body)
-            hoisted: Dict[Expr, str] = {}
-            hoist_decls: List[Stmt] = []
+            hoisted: dict[Expr, str] = {}
+            hoist_decls: list[Stmt] = []
 
             def hoist_fn(e: Expr) -> Expr:
                 if isinstance(e, BuiltinCall) and _expr_is_pure(e) and (_expr_vars(e).isdisjoint(mut)):
@@ -497,9 +527,9 @@ def dce_pass(prog: Program) -> Program:
     return p
 
 
-def _dce_stmts(stmts: List[Stmt], live_out: Set[str]) -> Tuple[List[Stmt], Set[str]]:
+def _dce_stmts(stmts: list[Stmt], live_out: set[str]) -> tuple[list[Stmt], set[str]]:
     live = set(live_out)
-    out_rev: List[Stmt] = []
+    out_rev: list[Stmt] = []
     for st in reversed(stmts):
         if isinstance(st, ReturnStmt):
             live |= _expr_vars(st.expr)

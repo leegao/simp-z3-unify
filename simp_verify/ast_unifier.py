@@ -1,17 +1,47 @@
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+
 import z3
 
-from .types import BOOL, FLOAT, INT, PYOBJ, STR, TArray, TPtr, TPyObj, TString, TStruct, Type
 from .ast_nodes import (
-    ArrLoad, ArrStoreExpr, ArrStoreStmt, Assign, BinOp, BuiltinCall, Const,
-    Expr, FieldGet, FieldSet, FuncCall, FuncDecl, IfStmt, IteExpr, LetDecl,
-    Program, PtrDeref, PtrOffset, PtrStoreStmt, PyAttr, PyBox, PyCall,
-    PyMethodCall, PyModuleRef, PyUnbox, ReturnStmt, Stmt, StrConcat, StrLen,
-    StrSubstr, StructInit, UnOp, Var, WhileStmt, typecheck_program,
+    ArrLoad,
+    ArrStoreExpr,
+    ArrStoreStmt,
+    Assign,
+    BinOp,
+    BuiltinCall,
+    Const,
+    Expr,
+    FieldGet,
+    FieldSet,
+    FuncCall,
+    IfStmt,
+    IteExpr,
+    LetDecl,
+    Program,
+    PtrDeref,
+    PtrOffset,
+    PtrStoreStmt,
+    PyAttr,
+    PyBox,
+    PyCall,
+    PyMethodCall,
+    PyModuleRef,
+    PyUnbox,
+    ReturnStmt,
+    Stmt,
+    StrConcat,
+    StrLen,
+    StrSubstr,
+    StructInit,
+    UnOp,
+    Var,
+    WhileStmt,
 )
 from .symexec import SymbolicExecutor
+from .types import (
+    INT,
+)
 
 
 @dataclass
@@ -32,8 +62,8 @@ class ASTUnifyResult:
     tree_dp_cost_before: int
     tree_dp_cost_after: int
     elapsed_ms: float
-    obligations: List[ASTDischargedObligation] = field(default_factory=list)
-    counterexample: Optional[str] = None
+    obligations: list[ASTDischargedObligation] = field(default_factory=list)
+    counterexample: str | None = None
 
 
 def _expr_size(e: Expr) -> int:
@@ -70,7 +100,7 @@ def _expr_size(e: Expr) -> int:
     return 1
 
 
-def _subst_expr(e: Expr, env: Dict[str, Expr]) -> Expr:
+def _subst_expr(e: Expr, env: dict[str, Expr]) -> Expr:
     """Pure tree substitution (does NOT merge into a DAG)."""
     if isinstance(e, Var):
         return env.get(e.name, e)
@@ -119,7 +149,7 @@ def _subst_expr(e: Expr, env: Dict[str, Expr]) -> Expr:
     return e
 
 
-def optimal_tree_cover_cost(e: Expr, proved_lhs: Set[Expr]) -> int:
+def optimal_tree_cover_cost(e: Expr, proved_lhs: set[Expr]) -> int:
     """
     Trivial O(|tree|) optimal bottom-up dynamic programming (BURS) covering on a pure AST tree!
     Because there is zero shared DAG fan-out, dp(node) = min(1 if node in proved_lhs else inf, 1 + sum dp(child))
@@ -129,7 +159,7 @@ def optimal_tree_cover_cost(e: Expr, proved_lhs: Set[Expr]) -> int:
         return 1
     if isinstance(e, (Const, Var, PyModuleRef)):
         return 1
-    children: List[Expr] = []
+    children: list[Expr] = []
     if isinstance(e, (UnOp, StrLen)):
         children = [e.arg]
     elif isinstance(e, (PyBox, PyUnbox)):
@@ -189,23 +219,23 @@ class ASTTreeUnifier:
         self.z3_calls = 0
         self.opaque_calls_saved = 0
         self.lockstep_loops_proved = 0
-        self.obligations: List[ASTDischargedObligation] = []
-        self.proved_lhs: Set[Expr] = set()
+        self.obligations: list[ASTDischargedObligation] = []
+        self.proved_lhs: set[Expr] = set()
         self.hole_id = 0
-        self.counterexample: Optional[str] = None
+        self.counterexample: str | None = None
 
     def _fresh_hole(self) -> str:
         h = f"ast_h{self.hole_id}"
         self.hole_id += 1
         return h
 
-    def _lower_leaf_to_z3(self, e: Expr, sym_env: Dict[str, object], is_left: bool) -> z3.ExprRef:
+    def _lower_leaf_to_z3(self, e: Expr, sym_env: dict[str, object], is_left: bool) -> z3.ExprRef:
         se = self.se_l if is_left else self.se_r
         from .symexec import SymState
         st = SymState(dict(sym_env), ret_val=None, has_returned=z3.BoolVal(False))
         return se._eval_expr(e, st, depth=0)
 
-    def _z3_discharge_leaf(self, e_l: Expr, e_r: Expr, sym_env: Dict[str, object], timeout_ms: int = 200) -> bool:
+    def _z3_discharge_leaf(self, e_l: Expr, e_r: Expr, sym_env: dict[str, object], timeout_ms: int = 200) -> bool:
         self.z3_calls += 1
         zl = self._lower_leaf_to_z3(e_l, sym_env, is_left=True)
         zr = self._lower_leaf_to_z3(e_r, sym_env, is_left=False)
@@ -225,7 +255,7 @@ class ASTTreeUnifier:
             self.counterexample = str(s.model())
         return False
 
-    def unify_expr_trees(self, e_l: Expr, e_r: Expr, sym_env: Dict[str, object]) -> bool:
+    def unify_expr_trees(self, e_l: Expr, e_r: Expr, sym_env: dict[str, object]) -> bool:
         """Syntax-directed tree anti-unification with opaque-first calls & lazy leaf Z3 discharge."""
         if e_l == e_r:
             if isinstance(e_l, FuncCall):
@@ -278,17 +308,17 @@ class ASTTreeUnifier:
 
     def _exec_tree_block(
         self,
-        stmts: List[Stmt],
-        ast_env: Dict[str, Expr],
-        sym_env: Dict[str, object],
+        stmts: list[Stmt],
+        ast_env: dict[str, Expr],
+        sym_env: dict[str, object],
         is_left: bool,
-    ) -> Tuple[Dict[str, Expr], Optional[Expr]]:
+    ) -> tuple[dict[str, Expr], Expr | None]:
         """
         Forward symbolic tree evaluator at the s-imp AST level:
         keeps named SSA bindings as pure trees, handling straight-line code, IfStmt, and WhileStmt.
         """
         env = dict(ast_env)
-        ret: Optional[Expr] = None
+        ret: Expr | None = None
         for st in stmts:
             if isinstance(st, LetDecl):
                 env[st.name] = _subst_expr(st.init, env)
@@ -342,7 +372,7 @@ class ASTTreeUnifier:
                     )
 
         # Check if entry function has lockstep-aligned while loops!
-        init_ast_env: Dict[str, Expr] = {p: Var(p) for p, _ in fn_l.params}
+        init_ast_env: dict[str, Expr] = {p: Var(p) for p, _ in fn_l.params}
         _, ret_l = self._exec_tree_block(fn_l.body, init_ast_env, self.init_env, is_left=True)
         _, ret_r = self._exec_tree_block(fn_r.body, init_ast_env, self.init_env, is_left=False)
         assert ret_l is not None and ret_r is not None
@@ -367,8 +397,8 @@ class ASTTreeUnifier:
 
 
 if __name__ == "__main__":
+    from .passes import const_fold_pass, cse_pass, dce_pass
     from .self_parser import build_self_hosted_simp_parser
-    from .passes import const_fold_pass, cse_pass, dce_pass, buggy_opt_pass
 
     base = build_self_hosted_simp_parser()
     opt = dce_pass(cse_pass(const_fold_pass(base)))
@@ -386,6 +416,7 @@ if __name__ == "__main__":
 
     # Negative check: mutate first `+` to `-` in next_token
     import copy
+
     from .passes import _map_stmt_exprs
     bug = copy.deepcopy(base)
     done = [False]

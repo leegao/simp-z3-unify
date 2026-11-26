@@ -1,6 +1,18 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Union
-from .types import BOOL, FLOAT, INT, PYOBJ, STR, TArray, TPtr, TPyObj, TString, TStruct, Type, BUILTIN_SIGS
+
+from .types import (
+    BOOL,
+    BUILTIN_SIGS,
+    FLOAT,
+    INT,
+    PYOBJ,
+    STR,
+    TArray,
+    TPtr,
+    TPyObj,
+    TStruct,
+    Type,
+)
 
 
 class Expr:
@@ -9,7 +21,7 @@ class Expr:
 
 @dataclass(frozen=True)
 class Const(Expr):
-    value: Union[bool, int, float, str]
+    value: bool | int | float | str
     ty: Type
 
 
@@ -65,13 +77,13 @@ class PtrDeref(Expr):
 @dataclass(frozen=True)
 class BuiltinCall(Expr):
     name: str  # exp, log, sin, cos, sqrt
-    args: Tuple[Expr, ...]
+    args: tuple[Expr, ...]
 
 
 @dataclass(frozen=True)
 class FuncCall(Expr):
     name: str
-    args: Tuple[Expr, ...]
+    args: tuple[Expr, ...]
 
 
 # ---- Host-Python Extension (all modeled as rigid uninterpreted functions) ----
@@ -101,7 +113,7 @@ class PyAttr(Expr):
 class PyCall(Expr):
     """Rigid host-Python function call: `callee(args...) : ret_ty`."""
     callee: Expr
-    args: Tuple[Expr, ...]
+    args: tuple[Expr, ...]
     ret_ty: Type = PYOBJ
 
 
@@ -110,7 +122,7 @@ class PyMethodCall(Expr):
     """Rigid host-Python method invocation: `obj.<method>(args...) : ret_ty`."""
     obj: Expr
     method: str
-    args: Tuple[Expr, ...]
+    args: tuple[Expr, ...]
     ret_ty: Type = PYOBJ
 
 
@@ -151,7 +163,7 @@ class StrSubstr(Expr):
 @dataclass(frozen=True)
 class StructDecl:
     name: str
-    fields: Tuple[Tuple[str, Type], ...]
+    fields: tuple[tuple[str, Type], ...]
 
     def as_type(self) -> TStruct:
         return TStruct(self.name, self.fields)
@@ -160,7 +172,7 @@ class StructDecl:
 @dataclass(frozen=True)
 class StructInit(Expr):
     struct_name: str
-    field_vals: Tuple[Tuple[str, Expr], ...]
+    field_vals: tuple[tuple[str, Expr], ...]
 
 
 @dataclass(frozen=True)
@@ -209,14 +221,14 @@ class PtrStoreStmt(Stmt):
 @dataclass
 class IfStmt(Stmt):
     cond: Expr
-    then_body: List[Stmt]
-    else_body: List[Stmt] = field(default_factory=list)
+    then_body: list[Stmt]
+    else_body: list[Stmt] = field(default_factory=list)
 
 
 @dataclass
 class WhileStmt(Stmt):
     cond: Expr
-    body: List[Stmt]
+    body: list[Stmt]
     unroll_bound: int = 4
 
 
@@ -228,16 +240,16 @@ class ReturnStmt(Stmt):
 @dataclass
 class FuncDecl:
     name: str
-    params: List[Tuple[str, Type]]
+    params: list[tuple[str, Type]]
     ret_ty: Type
-    body: List[Stmt]
+    body: list[Stmt]
 
 
 @dataclass
 class Program:
-    funcs: List[FuncDecl]
-    imports: List[PyImportDecl] = field(default_factory=list)
-    structs: List[StructDecl] = field(default_factory=list)
+    funcs: list[FuncDecl]
+    imports: list[PyImportDecl] = field(default_factory=list)
+    structs: list[StructDecl] = field(default_factory=list)
 
     def get_func(self, name: str) -> FuncDecl:
         for fn in self.funcs:
@@ -254,8 +266,8 @@ def _is_pyobj(t: Type) -> bool:
     return isinstance(t, TPyObj)
 
 
-def typecheck_program(prog: Program) -> Dict[str, Tuple[List[Type], Type]]:
-    func_sigs: Dict[str, Tuple[List[Type], Type]] = {}
+def typecheck_program(prog: Program) -> dict[str, tuple[list[Type], Type]]:
+    func_sigs: dict[str, tuple[list[Type], Type]] = {}
     import_aliases = {imp.alias: imp.module for imp in prog.imports}
     struct_defs = {sd.name: sd.as_type() for sd in prog.structs}
     for fn in prog.funcs:
@@ -264,7 +276,7 @@ def typecheck_program(prog: Program) -> Dict[str, Tuple[List[Type], Type]]:
         func_sigs[fn.name] = ([t for _, t in fn.params], fn.ret_ty)
 
     for fn in prog.funcs:
-        env: Dict[str, Type] = {p: t for p, t in fn.params}
+        env: dict[str, Type] = {p: t for p, t in fn.params}
         _tc_stmts(fn.body, env, func_sigs, import_aliases, struct_defs, fn.ret_ty)
     return func_sigs
 
@@ -275,10 +287,10 @@ def _types_compat(a: Type, b: Type) -> bool:
 
 def _tc_expr(
     e: Expr,
-    env: Dict[str, Type],
-    fsigs: Dict[str, Tuple[List[Type], Type]],
-    imports: Dict[str, str],
-    structs: Dict[str, TStruct],
+    env: dict[str, Type],
+    fsigs: dict[str, tuple[list[Type], Type]],
+    imports: dict[str, str],
+    structs: dict[str, TStruct],
 ) -> Type:
     if isinstance(e, Const):
         return e.ty
@@ -446,11 +458,11 @@ def _tc_expr(
 
 
 def _tc_stmts(
-    stmts: List[Stmt],
-    env: Dict[str, Type],
-    fsigs: Dict[str, Tuple[List[Type], Type]],
-    imports: Dict[str, str],
-    structs: Dict[str, TStruct],
+    stmts: list[Stmt],
+    env: dict[str, Type],
+    fsigs: dict[str, tuple[list[Type], Type]],
+    imports: dict[str, str],
+    structs: dict[str, TStruct],
     ret_ty: Type,
 ):
     for st in stmts:

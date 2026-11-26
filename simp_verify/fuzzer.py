@@ -1,19 +1,47 @@
 import random
 import time
 from dataclasses import dataclass
-from typing import List, Tuple
-from .types import BOOL, FLOAT, INT, PYOBJ, TArray, TPtr, TPyObj, Type
+
 from .ast_nodes import (
-    ArrLoad, ArrStoreStmt, Assign, BinOp, BuiltinCall, Const, Expr, FuncCall,
-    FuncDecl, IfStmt, IteExpr, LetDecl, Program, PtrDeref, PtrOffset,
-    PtrStoreStmt, PyAttr, PyBox, PyCall, PyImportDecl, PyMethodCall,
-    PyModuleRef, PyUnbox, ReturnStmt, Stmt, UnOp, Var, WhileStmt,
+    ArrLoad,
+    ArrStoreStmt,
+    Assign,
+    BinOp,
+    BuiltinCall,
+    Const,
+    Expr,
+    FuncCall,
+    FuncDecl,
+    IfStmt,
+    IteExpr,
+    LetDecl,
+    Program,
+    PtrDeref,
+    PtrOffset,
+    PtrStoreStmt,
+    PyAttr,
+    PyBox,
+    PyCall,
+    PyImportDecl,
+    PyMethodCall,
+    PyModuleRef,
+    PyUnbox,
+    ReturnStmt,
+    Stmt,
+    UnOp,
+    Var,
+    WhileStmt,
     typecheck_program,
 )
 from .passes import (
-    buggy_opt_pass, const_fold_pass, cse_pass, dce_pass, mem_licm_pass,
+    buggy_opt_pass,
+    const_fold_pass,
+    cse_pass,
+    dce_pass,
+    mem_licm_pass,
 )
 from .symexec import SymbolicExecutor
+from .types import BOOL, FLOAT, INT, PYOBJ, TArray, TPtr
 from .unifier import verify_equiv_bu_wlau
 
 
@@ -34,7 +62,7 @@ class SIMPFuzzer:
         self.tmp_id += 1
         return f"{prefix}_{self.tmp_id}"
 
-    def _gen_float_expr(self, fvars: List[str], bvars: List[str], pyvars: List[str], depth: int) -> Expr:
+    def _gen_float_expr(self, fvars: list[str], bvars: list[str], pyvars: list[str], depth: int) -> Expr:
         if depth <= 0 or self.rng.random() < 0.25:
             if self.rng.random() < 0.7 and fvars:
                 return Var(self.rng.choice(fvars))
@@ -81,7 +109,7 @@ class SIMPFuzzer:
         inner = PyBox(self._gen_float_expr(fvars, bvars, pyvars, depth - 1))
         return PyUnbox(PyMethodCall(inner, "clip", (Const(1.0, FLOAT),), ret_ty=PYOBJ), FLOAT)
 
-    def _gen_bool_expr(self, fvars: List[str], bvars: List[str], depth: int) -> Expr:
+    def _gen_bool_expr(self, fvars: list[str], bvars: list[str], depth: int) -> Expr:
         if depth <= 0 or self.rng.random() < 0.35:
             if bvars and self.rng.random() < 0.7:
                 return Var(self.rng.choice(bvars))
@@ -130,7 +158,7 @@ class SIMPFuzzer:
         fvars = ["x", "y"]
         bvars = ["flag"]
         pyvars = ["ctx"]
-        body: List[Stmt] = []
+        body: list[Stmt] = []
 
         # Create a host-Python object via module call
         obj_v = self._fresh("py")

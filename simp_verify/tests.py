@@ -1,11 +1,16 @@
 import unittest
-from .types import BOOL, FLOAT, INT, TArray, TPtr
+
 from .ast_nodes import (
-    BinOp, BuiltinCall, Const, FuncDecl, LetDecl, Program, ReturnStmt,
-    TypeErrorSIMP, Var, typecheck_program,
+    FuncDecl,
+    Program,
+    ReturnStmt,
+    TypeErrorSIMP,
+    Var,
+    typecheck_program,
 )
 from .e2e_demo import build_demo_program, verify_pass
 from .passes import buggy_opt_pass, const_fold_pass, cse_pass, dce_pass, mem_licm_pass
+from .types import FLOAT, INT
 
 
 class TestSIMPVerify(unittest.TestCase):

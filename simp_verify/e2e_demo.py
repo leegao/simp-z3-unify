@@ -1,14 +1,36 @@
-from typing import Callable, List, Tuple
-from .types import BOOL, FLOAT, INT, TArray, TPtr
+from collections.abc import Callable
+
 from .ast_nodes import (
-    ArrLoad, ArrStoreStmt, Assign, BinOp, BuiltinCall, Const, FuncCall,
-    FuncDecl, IfStmt, IteExpr, LetDecl, Program, PtrDeref, PtrOffset,
-    PtrStoreStmt, ReturnStmt, UnOp, Var, WhileStmt, typecheck_program,
+    ArrLoad,
+    ArrStoreStmt,
+    Assign,
+    BinOp,
+    BuiltinCall,
+    Const,
+    FuncCall,
+    FuncDecl,
+    IfStmt,
+    IteExpr,
+    LetDecl,
+    Program,
+    PtrDeref,
+    PtrOffset,
+    PtrStoreStmt,
+    ReturnStmt,
+    UnOp,
+    Var,
+    WhileStmt,
+    typecheck_program,
 )
 from .passes import (
-    buggy_opt_pass, const_fold_pass, cse_pass, dce_pass, mem_licm_pass,
+    buggy_opt_pass,
+    const_fold_pass,
+    cse_pass,
+    dce_pass,
+    mem_licm_pass,
 )
 from .symexec import SymbolicExecutor
+from .types import BOOL, FLOAT, INT, TArray, TPtr
 from .unifier import verify_equiv_bu_wlau
 
 
@@ -140,7 +162,7 @@ def verify_pass(name: str, prog_before: Program, prog_after: Program, entry: str
 
 def run_e2e():
     base = build_demo_program()
-    passes: List[Tuple[str, Callable[[Program], Program]]] = [
+    passes: list[tuple[str, Callable[[Program], Program]]] = [
         ("1. ConstFold + Algebraic Peephole", const_fold_pass),
         ("2. Common Subexpression Elimination (CSE)", cse_pass),
         ("3. Memory Forwarding + LICM", mem_licm_pass),

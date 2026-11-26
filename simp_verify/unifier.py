@@ -1,14 +1,14 @@
 import hashlib
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+
 import z3
 
 
 class UnionFind:
     def __init__(self):
-        self.parent: Dict[int, int] = {}
-        self.rank: Dict[int, int] = {}
+        self.parent: dict[int, int] = {}
+        self.rank: dict[int, int] = {}
 
     def find(self, x: int) -> int:
         if x not in self.parent:
@@ -41,7 +41,7 @@ class DischargedPredicate:
     lhs_str: str
     rhs_str: str
     method: str  # "exact_wl", "ring_fp_z3", "lsh_z3", "congruence_cascade", "holed_template"
-    template_str: Optional[str] = None
+    template_str: str | None = None
 
 
 @dataclass
@@ -53,13 +53,13 @@ class UnifyResult:
     candidates_checked: int
     z3_local_calls: int
     elapsed_ms: float
-    discharged: List[DischargedPredicate] = field(default_factory=list)
-    counterexample: Optional[str] = None
+    discharged: list[DischargedPredicate] = field(default_factory=list)
+    counterexample: str | None = None
 
 
-def collect_dag_nodes(expr: z3.ExprRef) -> List[z3.ExprRef]:
-    visited: Set[int] = set()
-    order: List[z3.ExprRef] = []
+def collect_dag_nodes(expr: z3.ExprRef) -> list[z3.ExprRef]:
+    visited: set[int] = set()
+    order: list[z3.ExprRef] = []
 
     def dfs(n: z3.ExprRef):
         nid = n.get_id()
@@ -84,9 +84,9 @@ PRIME_P = (1 << 61) - 1
 
 def _fp_eval_ring(
     expr: z3.ExprRef,
-    env_fp: Dict[str, int],
-    env_bool: Dict[str, int],
-    memo: Dict[int, object],
+    env_fp: dict[str, int],
+    env_bool: dict[str, int],
+    memo: dict[int, object],
 ):
     """
     Algebraic-invariant semantic homomorphism:
@@ -210,7 +210,7 @@ def _fp_eval_ring(
     return val
 
 
-def _z3_check_equiv(u: z3.ExprRef, v: z3.ExprRef, preconds: List[z3.BoolRef], timeout_ms: int = 50) -> Tuple[str, Optional[str]]:
+def _z3_check_equiv(u: z3.ExprRef, v: z3.ExprRef, preconds: list[z3.BoolRef], timeout_ms: int = 50) -> tuple[str, str | None]:
     s = z3.Solver()
     s.set("timeout", timeout_ms)
     for p in preconds:
@@ -232,7 +232,7 @@ def _short_str(e: z3.ExprRef, limit: int = 80) -> str:
 def verify_equiv_bu_wlau(
     lhs: z3.ExprRef,
     rhs: z3.ExprRef,
-    preconds: Optional[List[z3.BoolRef]] = None,
+    preconds: list[z3.BoolRef] | None = None,
     local_timeout_ms: int = 50,
     final_timeout_ms: int = 2000,
 ) -> UnifyResult:
@@ -252,12 +252,12 @@ def verify_equiv_bu_wlau(
     all_nodes = nodes_l + nodes_r
     nodes_before = len({n.get_id() for n in all_nodes})
     uf = UnionFind()
-    discharged: List[DischargedPredicate] = []
+    discharged: list[DischargedPredicate] = []
     hole_counter = [0]
 
     # Heights & FVs
-    heights: Dict[int, int] = {}
-    fvs: Dict[int, frozenset] = {}
+    heights: dict[int, int] = {}
+    fvs: dict[int, frozenset] = {}
     for n in all_nodes:
         nid = n.get_id()
         if nid in heights:
@@ -267,15 +267,15 @@ def verify_equiv_bu_wlau(
             fvs[nid] = frozenset([n.decl().name()]) if (z3.is_const(n) and n.decl().kind() == z3.Z3_OP_UNINTERPRETED) else frozenset()
         else:
             heights[nid] = 1 + max(heights[c.get_id()] for c in n.children())
-            s: Set[str] = set()
+            s: set[str] = set()
             for c in n.children():
                 s.update(fvs[c.get_id()])
             fvs[nid] = frozenset(s)
 
     # Stage 1: AC-normalized WL hashes
     comm_ops = {z3.Z3_OP_ADD, z3.Z3_OP_MUL, z3.Z3_OP_AND, z3.Z3_OP_OR}
-    wl: Dict[int, int] = {}
-    shingles: Dict[int, Set[int]] = {}
+    wl: dict[int, int] = {}
+    shingles: dict[int, set[int]] = {}
     for n in all_nodes:
         nid = n.get_id()
         if nid in wl:
@@ -298,7 +298,7 @@ def verify_equiv_bu_wlau(
             shingles[nid] = sh
 
     # Stage 1 exact WL collapse
-    by_wl: Dict[Tuple[str, int], List[z3.ExprRef]] = {}
+    by_wl: dict[tuple[str, int], list[z3.ExprRef]] = {}
     for u in nodes_l:
         if u.num_args() > 0:
             by_wl.setdefault((str(u.sort()), wl[u.get_id()]), []).append(u)
@@ -325,7 +325,7 @@ def verify_equiv_bu_wlau(
             envs_bool[1][nm] = _h64(f"B2:{nm}")
 
     memos = [{}, {}]
-    sem_fp: Dict[int, Tuple[object, object]] = {}
+    sem_fp: dict[int, tuple[object, object]] = {}
     for n in all_nodes:
         nid = n.get_id()
         if nid not in sem_fp:
@@ -335,11 +335,11 @@ def verify_equiv_bu_wlau(
             )
 
     # Candidate discovery: exact semantic-fingerprint buckets + height-banded MinHash LSH
-    cands: List[Tuple[int, int, z3.ExprRef, z3.ExprRef, str]] = []
-    seen_pairs: Set[Tuple[int, int]] = set()
+    cands: list[tuple[int, int, z3.ExprRef, z3.ExprRef, str]] = []
+    seen_pairs: set[tuple[int, int]] = set()
 
     # 2a. Exact semantic fingerprint match (captures ALL commutative ring, boolean, array identities in O(1)!)
-    sem_buckets: Dict[Tuple[str, object], List[z3.ExprRef]] = {}
+    sem_buckets: dict[tuple[str, object], list[z3.ExprRef]] = {}
     for u in nodes_l:
         if u.num_args() > 0:
             sem_buckets.setdefault((str(u.sort()), sem_fp[u.get_id()]), []).append(u)
@@ -357,11 +357,11 @@ def verify_equiv_bu_wlau(
     rows = num_h // bands
     seeds = [(0x9E3779B97F4A7C15 * (i + 1)) & 0xFFFFFFFFFFFFFFFF for i in range(num_h)]
 
-    def minhash_sig(sh: Set[int]) -> List[int]:
+    def minhash_sig(sh: set[int]) -> list[int]:
         return [min(((h ^ s) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF for h in sh) for s in seeds]
 
-    lsh_buckets: List[Dict[Tuple[str, int, Tuple[int, ...]], List[z3.ExprRef]]] = [{} for _ in range(bands)]
-    sigs_l: Dict[int, List[int]] = {}
+    lsh_buckets: list[dict[tuple[str, int, tuple[int, ...]], list[z3.ExprRef]]] = [{} for _ in range(bands)]
+    sigs_l: dict[int, list[int]] = {}
     for u in nodes_l:
         if u.num_args() == 0:
             continue
@@ -420,19 +420,19 @@ def verify_equiv_bu_wlau(
         return UnifyResult(True, "unsat", nodes_before, 1, len(cands), z3_local_calls, dt, discharged)
 
     # Map every non-trivial unified class with >=2 distinct nodes to a fresh Skolem hole hm_k
-    cls_members: Dict[int, Set[int]] = {}
-    node_by_id: Dict[int, z3.ExprRef] = {}
+    cls_members: dict[int, set[int]] = {}
+    node_by_id: dict[int, z3.ExprRef] = {}
     for n in all_nodes:
         nid = n.get_id()
         node_by_id[nid] = n
         cls_members.setdefault(uf.find(nid), set()).add(nid)
 
-    rep_var: Dict[int, z3.ExprRef] = {}
+    rep_var: dict[int, z3.ExprRef] = {}
     for rep, members in cls_members.items():
         if len(members) >= 2 and node_by_id[rep].num_args() > 0:
             rep_var[rep] = z3.Const(f"hm_{rep}", node_by_id[rep].sort())
 
-    def rewrite_maximal(n: z3.ExprRef, memo: Dict[int, z3.ExprRef]) -> z3.ExprRef:
+    def rewrite_maximal(n: z3.ExprRef, memo: dict[int, z3.ExprRef]) -> z3.ExprRef:
         nid = n.get_id()
         if nid in memo:
             return memo[nid]
