@@ -10,6 +10,11 @@ fn main(x: float, flag: bool) -> float {
   let p: Point = Point { x: x, y: 1.0 };
   let t: pyobj = np.tanh(x);
   let m: float = unbox<float>(t);
-  let z: float = flag ? add(m, p.x) : (x * 2.0);
+  // Native dictionary: intro form + subscript load/store.
+  let d: dict<str, float> = dict<str, float> { "a": x, "b": 1.0 };
+  d["a"] = m;
+  // Runtime-checked unboxing into a struct (in addition to primitives).
+  let q: Point = unbox<Point>(t);
+  let z: float = flag ? add(d["a"], q.x) : (x * 2.0 + p.y);
   return z;
 }

@@ -41,6 +41,21 @@ class TArray(Type):
 
 
 @dataclass(frozen=True)
+class TDict(Type):
+    """Native dictionary type (modeled as Z3 Array(key, val)).
+
+    Keys are restricted to hashable primitives (``str`` or ``int``); values may
+    be any type. Subscript load/store reuse the array nodes (``ArrLoad`` /
+    ``ArrStoreExpr`` / ``ArrStoreStmt``) since the Z3 encoding is identical.
+    """
+    key: Type
+    val: Type
+
+    def __str__(self) -> str:
+        return f"dict<{self.key}, {self.val}>"
+
+
+@dataclass(frozen=True)
 class TPyObj(Type):
     """Opaque host-Python object handle (modeled as uninterpreted PyObj sort in Z3)."""
     tag: str = "object"

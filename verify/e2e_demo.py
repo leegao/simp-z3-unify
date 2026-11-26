@@ -34,6 +34,31 @@ from simp.typecheck import typecheck_program
 from .symexec import SymbolicExecutor
 from .unifier import verify_equiv_bu_wlau
 
+DICT_DEMO_SRC = """
+struct Point { x: float, y: float }
+
+fn dict_kernel(d: dict<str, float>, k: str, s: float) -> float {
+  let v: float = d[k];
+  d[k] = v * s;
+  let e: dict<str, float> = dict<str, float> { "a": s, "b": v };
+  return d[k] + e["a"];
+}
+
+fn unbox_demo(o: pyobj) -> float {
+  let p: Point = unbox<Point>(o);
+  let d: dict<str, float> = unbox<dict<str, float>>(o);
+  return p.x + d["k"];
+}
+"""
+
+
+def build_dict_demo_program() -> Program:
+    """A program exercising native dicts (intro, subscript load/store) and
+    runtime-checked unboxing into a struct and a dict."""
+    from simp.parser import parse
+
+    return parse(DICT_DEMO_SRC)
+
 
 def build_demo_program() -> Program:
     """

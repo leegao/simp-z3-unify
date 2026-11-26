@@ -44,6 +44,7 @@ type: "bool" -> t_bool
     | "void" -> t_void
     | "ptr" "<" type ">" -> t_ptr
     | "array" "<" type ">" -> t_array
+    | "dict" "<" type "," type ">" -> t_dict
     | "pyobj" ("<" NAME ">")? -> t_pyobj
     | NAME -> t_struct
 
@@ -93,6 +94,7 @@ postfix: primary
         | var
         | "(" expr ")"
         | struct_init
+        | dict_init
         | box
         | unbox
 
@@ -108,6 +110,10 @@ struct_init: NAME "{" init_fields? "}"                  // StructInit
 init_fields: init_field ("," init_field)* ","?
 init_field: NAME ":" expr
 
+dict_init: "dict" "<" type "," type ">" "{" dict_entries? "}"  // DictInit
+dict_entries: dict_entry ("," dict_entry)* ","?
+dict_entry: expr ":" expr
+
 box: "box" "(" expr ")"                                 // PyBox
 unbox: "unbox" "<" type ">" "(" expr ")"                // PyUnbox
 
@@ -116,7 +122,7 @@ arglist: expr ("," expr)*
 // ---- Terminals ----
 FLOAT.2: /[0-9]+\.[0-9]+/
 INT.1: /[0-9]+/
-NAME: /(?!(?:import|as|struct|fn|let|if|else|while|unroll|return|bool|int|float|str|void|ptr|array|pyobj|box|unbox|true|false)\b)[A-Za-z_][A-Za-z0-9_]*/
+NAME: /(?!(?:import|as|struct|fn|let|if|else|while|unroll|return|bool|int|float|str|void|ptr|array|dict|pyobj|box|unbox|true|false)\b)[A-Za-z_][A-Za-z0-9_]*/
 STRING: /"([^"\\]|\\.)*"/
 
 LINE_COMMENT: /\/\/[^\n]*/

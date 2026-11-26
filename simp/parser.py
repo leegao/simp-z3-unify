@@ -18,6 +18,7 @@ of its children). The result is a fully-typed :class:`simp.simp_ast.Program`.
 
 from __future__ import annotations
 
+import ast as _pyast
 import sys
 from dataclasses import fields, is_dataclass
 from pathlib import Path
@@ -25,7 +26,6 @@ from pathlib import Path
 from lark import Lark, Token, Tree
 from lark.exceptions import LarkError
 
-from . import simp_ast as _pyast
 from .simp_ast import (
     ArrLoad,
     ArrStoreStmt,
@@ -33,6 +33,7 @@ from .simp_ast import (
     BinOp,
     BuiltinCall,
     Const,
+    DictInit,
     Expr,
     FieldGet,
     FuncCall,
@@ -70,6 +71,7 @@ from .simp_types import (
     STR,
     VOID,
     TArray,
+    TDict,
     TPtr,
     TPyObj,
     TStruct,
@@ -210,6 +212,8 @@ class SIMPParser:
                 return TPtr(self._type(node.children[0]))
             case "t_array":
                 return TArray(self._type(node.children[0]))
+            case "t_dict":
+                return TDict(self._type(node.children[0]), self._type(node.children[1]))
             case "t_pyobj":
                 tag = str(node.children[0]) if node.children else "object"
                 return TPyObj(tag)
@@ -343,9 +347,11 @@ class SIMPParser:
             case "arr_load":
                 arr, aty = self._expr(node.children[0], env)
                 idx, _ = self._expr(node.children[1], env)
-                if not isinstance(aty, TArray):
-                    raise SIMPParseError(f"indexing non-array type: {aty}")
-                return ArrLoad(arr, idx), aty.elem
+                if isinstance(aty, TArray):
+                    return ArrLoad(arr, idx), aty.elem
+                if isinstance(aty, TDict):
+                    return ArrLoad(arr, idx), aty.val
+                raise SIMPParseError(f"indexing non-array/dict type: {aty}")
 
             case "attr":
                 obj, oty = self._expr(node.children[0], env)
@@ -369,6 +375,17 @@ class SIMPParser:
                         )
                 return StructInit(sname, tuple(field_vals)), st
 
+            case "dict_init":
+                key_ty = self._type(node.children[0])
+                val_ty = self._type(node.children[1])
+                entries: list[tuple[Expr, Expr]] = []
+                if len(node.children) > 2:
+                    for ent in node.children[2].children:
+                        k = self._expr(ent.children[0], env)[0]
+                        v = self._expr(ent.children[1], env)[0]
+                        entries.append((k, v))
+                return DictInit(key_ty, val_ty, tuple(entries)), TDict(key_ty, val_ty)
+
             case "box":
                 e, t = self._expr(node.children[0], env)
                 if t not in (BOOL, INT, FLOAT):
@@ -378,9 +395,12 @@ class SIMPParser:
             case "unbox":
                 target = self._type(node.children[0])
                 e, t = self._expr(node.children[1], env)
-                if not isinstance(t, TPyObj) or target not in (BOOL, INT, FLOAT):
+                if not isinstance(t, TPyObj) or (
+                    target not in (BOOL, INT, FLOAT)
+                    and not isinstance(target, (TStruct, TDict))
+                ):
                     raise SIMPParseError(
-                        f"unbox requires pyobj -> primitive, got {t} -> {target}"
+                        f"unbox requires pyobj -> unboxable, got {t} -> {target}"
                     )
                 return PyUnbox(e, target), target
 

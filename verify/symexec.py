@@ -10,6 +10,7 @@ from simp.simp_ast import (
     BinOp,
     BuiltinCall,
     Const,
+    DictInit,
     Expr,
     FieldGet,
     FieldSet,
@@ -38,7 +39,18 @@ from simp.simp_ast import (
     Var,
     WhileStmt,
 )
-from simp.simp_types import BOOL, FLOAT, INT, TArray, TPtr, TPyObj, TString, TStruct, Type
+from simp.simp_types import (
+    BOOL,
+    FLOAT,
+    INT,
+    TArray,
+    TDict,
+    TPtr,
+    TPyObj,
+    TString,
+    TStruct,
+    Type,
+)
 
 # Shared uninterpreted Z3 sort for all host-Python objects
 PYOBJ_SORT = z3.DeclareSort("PyObj")
@@ -57,6 +69,8 @@ def z3_sort_of(ty: Type) -> z3.SortRef:
         return PYOBJ_SORT
     if isinstance(ty, TArray):
         return z3.ArraySort(z3.IntSort(), z3_sort_of(ty.elem))
+    if isinstance(ty, TDict):
+        return z3.ArraySort(z3_sort_of(ty.key), z3_sort_of(ty.val))
     if isinstance(ty, TPtr):
         return z3.IntSort()
     raise ValueError(f"Unsupported sort: {ty}")
@@ -97,6 +111,7 @@ class SymbolicExecutor:
         self.uf_py_rigid: dict[tuple, z3.FuncDeclRef] = {}
         self.py_mod_consts: dict[str, z3.ExprRef] = {}
         self.struct_z3: dict[str, tuple[z3.DatatypeSortRef, z3.FuncDeclRef, dict[str, z3.FuncDeclRef], tuple]] = {}
+        self._dict_empty: dict[tuple, z3.ExprRef] = {}
         self._init_structs()
 
     def share_uf_tables_from(self, other: "SymbolicExecutor"):
@@ -105,6 +120,7 @@ class SymbolicExecutor:
         self.uf_py_rigid = other.uf_py_rigid
         self.py_mod_consts = other.py_mod_consts
         self.struct_z3 = other.struct_z3
+        self._dict_empty = other._dict_empty
 
 
     def _sort_of(self, ty: Type) -> z3.SortRef:
@@ -149,6 +165,8 @@ class SymbolicExecutor:
                 env[pname] = ("ptr", heap_name, off)
             elif isinstance(pty, TArray):
                 env[pname] = z3.Array(pname, z3.IntSort(), z3_sort_of(pty.elem))
+            elif isinstance(pty, TDict):
+                env[pname] = z3.Array(pname, z3_sort_of(pty.key), z3_sort_of(pty.val))
             elif isinstance(pty, TPyObj):
                 env[pname] = z3.Const(pname, PYOBJ_SORT)
             elif pty == BOOL:
@@ -295,6 +313,17 @@ class SymbolicExecutor:
             _, ctor, _, _ = self.struct_z3[e.struct_name]
             vals = [self._eval_expr(v, st, depth) for _, v in e.field_vals]
             return ctor(*vals)
+        if isinstance(e, DictInit):
+            ks, vs = self._sort_of(e.key_ty), self._sort_of(e.val_ty)
+            key = (str(ks), str(vs))
+            base = self._dict_empty.get(key)
+            if base is None:
+                base = z3.Const(f"dict_empty_{ks}_{vs}", z3.ArraySort(ks, vs))
+                self._dict_empty[key] = base
+            acc = base
+            for k, v in e.entries:
+                acc = z3.Store(acc, self._eval_expr(k, st, depth), self._eval_expr(v, st, depth))
+            return acc
         if isinstance(e, FieldGet):
             tv = self._eval_expr(e.target, st, depth)
             sname = tv.sort().name()

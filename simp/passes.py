@@ -8,6 +8,7 @@ from .simp_ast import (
     BinOp,
     BuiltinCall,
     Const,
+    DictInit,
     Expr,
     FieldGet,
     FieldSet,
@@ -85,6 +86,11 @@ def _expr_vars(e: Expr) -> set[str]:
         for _, v in e.field_vals:
             s |= _expr_vars(v)
         return s
+    if isinstance(e, DictInit):
+        s: set[str] = set()
+        for k, v in e.entries:
+            s |= _expr_vars(k) | _expr_vars(v)
+        return s
     if isinstance(e, FieldGet):
         return _expr_vars(e.target)
     if isinstance(e, FieldSet):
@@ -148,6 +154,8 @@ def _expr_is_pure(e: Expr) -> bool:
         return _expr_is_pure(e.s) and _expr_is_pure(e.offset) and _expr_is_pure(e.length)
     if isinstance(e, StructInit):
         return all(_expr_is_pure(v) for _, v in e.field_vals)
+    if isinstance(e, DictInit):
+        return all(_expr_is_pure(k) and _expr_is_pure(v) for k, v in e.entries)
     if isinstance(e, FieldGet):
         return _expr_is_pure(e.target)
     if isinstance(e, FieldSet):
@@ -209,6 +217,8 @@ def _map_expr(e: Expr, fn) -> Expr:
         return fn(StrSubstr(_map_expr(e.s, fn), _map_expr(e.offset, fn), _map_expr(e.length, fn)))
     if isinstance(e, StructInit):
         return fn(StructInit(e.struct_name, tuple((k, _map_expr(v, fn)) for k, v in e.field_vals)))
+    if isinstance(e, DictInit):
+        return fn(DictInit(e.key_ty, e.val_ty, tuple((_map_expr(k, fn), _map_expr(v, fn)) for k, v in e.entries)))
     if isinstance(e, FieldGet):
         return fn(FieldGet(_map_expr(e.target, fn), e.field))
     if isinstance(e, FieldSet):

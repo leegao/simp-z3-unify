@@ -16,7 +16,8 @@ from simp.simp_ast import (
 from simp.simp_types import FLOAT, INT
 from simp.typecheck import TypeErrorSIMP, typecheck_program
 
-from .e2e_demo import build_demo_program, verify_pass
+from .e2e_demo import build_demo_program, build_dict_demo_program, verify_pass
+from .symexec import SymbolicExecutor
 
 
 class TestSIMPVerify(unittest.TestCase):
@@ -57,6 +58,24 @@ class TestSIMPVerify(unittest.TestCase):
         self.assertFalse(res.equivalent)
         self.assertEqual(res.z3_final_status, "sat")
         self.assertIsNotNone(res.counterexample)
+
+    def test_dict_program_typecheck_and_passes(self):
+        prog = build_dict_demo_program()
+        typecheck_program(prog)
+        cur = prog
+        for fn in (const_fold_pass, cse_pass, mem_licm_pass, dce_pass):
+            cur = fn(cur)
+            typecheck_program(cur)
+        res = verify_pass("dict", prog, cur, entry="dict_kernel")
+        self.assertTrue(res.equivalent)
+        self.assertEqual(res.z3_final_status, "unsat")
+
+    def test_unbox_to_struct_and_dict_lowers(self):
+        prog = build_dict_demo_program()
+        se = SymbolicExecutor(prog, rec_depth=2)
+        env, _ = se.make_initial_inputs("unbox_demo")
+        ret, _ = se.lower_function("unbox_demo", env)
+        self.assertEqual(ret.sort().name(), "Real")
 
 
 if __name__ == "__main__":

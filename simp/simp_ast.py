@@ -168,6 +168,18 @@ class StructInit(Expr):
 
 
 @dataclass(frozen=True)
+class DictInit(Expr):
+    """Dictionary introduction form: `dict<K,V> { k1: v1, ... }`.
+
+    Modeled as a chain of functional array stores over an empty array; reads of
+    absent keys yield the array's default value (runtime-checked).
+    """
+    key_ty: Type
+    val_ty: Type
+    entries: tuple[tuple[Expr, Expr], ...]
+
+
+@dataclass(frozen=True)
 class FieldGet(Expr):
     target: Expr
     field: str

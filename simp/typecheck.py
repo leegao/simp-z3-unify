@@ -13,6 +13,7 @@ from .simp_ast import (
     BinOp,
     BuiltinCall,
     Const,
+    DictInit,
     Expr,
     FieldGet,
     FieldSet,
@@ -48,6 +49,7 @@ from .simp_types import (
     PYOBJ,
     STR,
     TArray,
+    TDict,
     TPtr,
     TPyObj,
     TStruct,
@@ -61,6 +63,11 @@ class TypeErrorSIMP(Exception):
 
 def _is_pyobj(t: Type) -> bool:
     return isinstance(t, TPyObj)
+
+
+def _is_unbox_target(t: Type) -> bool:
+    """Types a host-Python object may be unboxed into (runtime-checked)."""
+    return t in (BOOL, INT, FLOAT) or isinstance(t, (TStruct, TDict))
 
 
 def typecheck_program(prog: Program) -> dict[str, tuple[list[Type], Type]]:
@@ -133,16 +140,28 @@ def _tc_expr(
         case ArrLoad(arr, index):
             ta = _tc_expr(arr, env, fsigs, imports, structs)
             ti = _tc_expr(index, env, fsigs, imports, structs)
-            if not isinstance(ta, TArray) or ti != INT:
-                raise TypeErrorSIMP(f"Invalid ArrLoad: {ta}[{ti}]")
-            return ta.elem
+            if isinstance(ta, TArray):
+                if ti != INT:
+                    raise TypeErrorSIMP(f"Invalid ArrLoad: {ta}[{ti}]")
+                return ta.elem
+            if isinstance(ta, TDict):
+                if not _types_compat(ti, ta.key):
+                    raise TypeErrorSIMP(f"Invalid DictLoad: {ta}[{ti}]")
+                return ta.val
+            raise TypeErrorSIMP(f"Invalid ArrLoad: {ta}[{ti}]")
         case ArrStoreExpr(arr, index, val):
             ta = _tc_expr(arr, env, fsigs, imports, structs)
             ti = _tc_expr(index, env, fsigs, imports, structs)
             tv = _tc_expr(val, env, fsigs, imports, structs)
-            if not isinstance(ta, TArray) or ti != INT or not _types_compat(tv, ta.elem):
-                raise TypeErrorSIMP(f"Invalid ArrStoreExpr: {ta}[{ti}] = {tv}")
-            return ta
+            if isinstance(ta, TArray):
+                if ti != INT or not _types_compat(tv, ta.elem):
+                    raise TypeErrorSIMP(f"Invalid ArrStoreExpr: {ta}[{ti}] = {tv}")
+                return ta
+            if isinstance(ta, TDict):
+                if not _types_compat(ti, ta.key) or not _types_compat(tv, ta.val):
+                    raise TypeErrorSIMP(f"Invalid DictStoreExpr: {ta}[{ti}] = {tv}")
+                return ta
+            raise TypeErrorSIMP(f"Invalid ArrStoreExpr: {ta}[{ti}] = {tv}")
         case PtrOffset(ptr, offset):
             tp = _tc_expr(ptr, env, fsigs, imports, structs)
             to = _tc_expr(offset, env, fsigs, imports, structs)
@@ -207,8 +226,8 @@ def _tc_expr(
             return PYOBJ
         case PyUnbox(expr, target_ty):
             t = _tc_expr(expr, env, fsigs, imports, structs)
-            if not _is_pyobj(t) or target_ty not in (BOOL, INT, FLOAT):
-                raise TypeErrorSIMP(f"PyUnbox requires pyobj -> primitive, got {t} -> {target_ty}")
+            if not _is_pyobj(t) or not _is_unbox_target(target_ty):
+                raise TypeErrorSIMP(f"PyUnbox requires pyobj -> unboxable, got {t} -> {target_ty}")
             return target_ty
 
         case StrConcat(left, right):
@@ -238,6 +257,17 @@ def _tc_expr(
                 if not _types_compat(at, ety):
                     raise TypeErrorSIMP(f"StructInit {struct_name}.{fnm}: expected {ety}, got {at}")
             return st
+        case DictInit(key_ty, val_ty, entries):
+            if key_ty not in (STR, INT):
+                raise TypeErrorSIMP(f"DictInit key type must be str or int, got {key_ty}")
+            for k, v in entries:
+                kt = _tc_expr(k, env, fsigs, imports, structs)
+                if not _types_compat(kt, key_ty):
+                    raise TypeErrorSIMP(f"DictInit key: expected {key_ty}, got {kt}")
+                vt = _tc_expr(v, env, fsigs, imports, structs)
+                if not _types_compat(vt, val_ty):
+                    raise TypeErrorSIMP(f"DictInit val: expected {val_ty}, got {vt}")
+            return TDict(key_ty, val_ty)
         case FieldGet(target, field):
             ts = _tc_expr(target, env, fsigs, imports, structs)
             if not isinstance(ts, TStruct):
@@ -278,13 +308,17 @@ def _tc_stmts(
                 if not _types_compat(et, env[name]):
                     raise TypeErrorSIMP(f"Assign {name}: expected {env[name]}, got {et}")
             case ArrStoreStmt(arr_name, index, val):
-                if arr_name not in env or not isinstance(env[arr_name], TArray):
-                    raise TypeErrorSIMP(f"ArrStore target {arr_name} is not an array")
+                if arr_name not in env or not isinstance(env[arr_name], (TArray, TDict)):
+                    raise TypeErrorSIMP(f"ArrStore target {arr_name} is not an array/dict")
                 ta = env[arr_name]
                 ti = _tc_expr(index, env, fsigs, imports, structs)
                 tv = _tc_expr(val, env, fsigs, imports, structs)
-                if ti != INT or not _types_compat(tv, ta.elem):
-                    raise TypeErrorSIMP(f"ArrStore mismatch on {arr_name}")
+                if isinstance(ta, TArray):
+                    if ti != INT or not _types_compat(tv, ta.elem):
+                        raise TypeErrorSIMP(f"ArrStore mismatch on {arr_name}")
+                else:
+                    if not _types_compat(ti, ta.key) or not _types_compat(tv, ta.val):
+                        raise TypeErrorSIMP(f"DictStore mismatch on {arr_name}")
             case PtrStoreStmt(ptr_expr, val):
                 tp = _tc_expr(ptr_expr, env, fsigs, imports, structs)
                 tv = _tc_expr(val, env, fsigs, imports, structs)

@@ -6,9 +6,9 @@ syntax in [`simp_ast.py`](./simp_ast.py) and the concrete surface syntax in
 [`simp.lark`](./simp.lark); the type rules mirror `typecheck_program` exactly.
 
 *s-imp* is a small imperative language with integers, floats, booleans, native
-strings, arrays, pointers, structs, and a rigid host-Python extension (imports,
-attribute access, calls, methods, and `box`/`unbox` bridges). All host-Python
-interaction is modeled as **uninterpreted** operations.
+strings, arrays, dictionaries, pointers, structs, and a rigid host-Python
+extension (imports, attribute access, calls, methods, and `box`/`unbox`
+bridges). All host-Python interaction is modeled as **uninterpreted** operations.
 
 ---
 
@@ -22,8 +22,9 @@ $$
         \mid \mathsf{void} \\
       \mid& \mathsf{ptr}\langle\tau\rangle
         \mid \mathsf{array}\langle\tau\rangle
+        \mid \mathsf{dict}\langle\tau,\tau\rangle
         \mid \mathsf{pyobj}\langle t\rangle
-        \mid \mathsf{struct}\\,S
+        \mid \mathsf{struct}\,S
 \end{aligned}
 $$
 
@@ -55,7 +56,8 @@ e ::= & c \qquad\qquad\qquad\\,\\, \text{(constant: } \mathsf{bool},\mathsf{int}
       \mid& \mathsf{pybox}(e) \mid \mathsf{pyunbox}\langle\tau\rangle(e) \quad \text{(boxing bridges)}\\
       \mid& e_1 \mathbin{+\!\!+} e_2 \qquad\quad \text{(string concatenation)}\\
       \mid& \mathsf{len}(e) \mid \mathsf{substr}(e_1,e_2,e_3) \quad \text{(string builtins)}\\
-      \mid& S\\{\\,\overline{f_i:e_i}\\,\\} \qquad\quad \text{(struct construction)}\\
+      \mid& S\{\,\overline{f_i:e_i}\,\} \qquad\quad \text{(struct construction)}\\
+      \mid& \mathsf{dict}\langle\tau_K,\tau_V\rangle\{\,\overline{k_i:v_i}\,\} \quad \text{(dict construction)}\\
       \mid& \mathsf{setfield}(e_1,f,e_2) \quad \text{(functional field update)}
 \end{aligned}
 $$
@@ -102,6 +104,7 @@ $$
 v \in \mathit{Val} ::= & n \in \mathbb{Z} \mid r \in \mathbb{R} \mid b \in \\{\mathsf{true},\mathsf{false}\\} \mid s \in \Sigma^{*}\\
       \mid& \ell \in \mathit{Loc} \qquad\text{(pointer)}\\
       \mid& A \in \mathbb{Z} \rightharpoonup \mathit{Val} \qquad\text{(array, McCarthy-style)}\\
+      \mid& D \in \mathit{Key} \rightharpoonup \mathit{Val} \qquad\text{(dict, McCarthy-style)}\\
       \mid& o \in \mathit{PyObj} \qquad\text{(opaque host object)}\\
       \mid& \\{\\,f_1\mapsto v_1,\dots,f_n\mapsto v_n\\,\\} \qquad\text{(struct)}
 \end{aligned}
@@ -224,6 +227,30 @@ $$
       \langle e_2,\sigma,H\rangle \Downarrow n \quad
       \langle e_3,\sigma,H\rangle \Downarrow v}
      {\langle \mathsf{store}(e_1,e_2,e_3),\sigma,H\rangle \Downarrow \mathsf{store}(A,n,v)}
+$$
+
+**Dicts.** A dictionary is a finite map $D$ keyed by $\mathit{Key} = \Sigma^{*}\cup\mathbb{Z}$.
+The intro form builds $D$ by successive functional stores over an empty map;
+subscript load/store are the same $\mathsf{select}/\mathsf{store}$ operations as
+arrays (with a general key domain). Reads of absent keys yield the map's default
+value (runtime-checked).
+
+$$
+\frac{\langle \bar k,\sigma,H\rangle \Downarrow \bar v_k \quad
+      \langle \bar e,\sigma,H\rangle \Downarrow \bar v}
+     {\langle \mathsf{dict}\langle\tau_K,\tau_V\rangle\{\overline{k_i:e_i}\},\sigma,H\rangle \Downarrow
+      \mathsf{store}(\dots\mathsf{store}(D_\varnothing,k_1,v_1)\dots,k_n,v_n)}
+$$
+
+$$
+\frac{\langle e_1,\sigma,H\rangle \Downarrow D \qquad
+      \langle e_2,\sigma,H\rangle \Downarrow k}
+     {\langle e_1[e_2],\sigma,H\rangle \Downarrow \mathsf{select}(D,k)}
+\qquad
+\frac{\langle e_1,\sigma,H\rangle \Downarrow D \quad
+      \langle e_2,\sigma,H\rangle \Downarrow k \quad
+      \langle e_3,\sigma,H\rangle \Downarrow v}
+     {\langle \mathsf{store}(e_1,e_2,e_3),\sigma,H\rangle \Downarrow \mathsf{store}(D,k,v)}
 $$
 
 **Pointers.** A pointer value is a location; offset arithmetic is on locations.
@@ -534,6 +561,28 @@ $$
      {\Gamma\vdash \mathsf{store}(e_1,e_2,e_3):\mathsf{array}\langle\tau\rangle}
 $$
 
+**Dicts.** Keys must be $\mathsf{str}$ or $\mathsf{int}$; subscript load/store
+reuse the array rules with the key type in place of $\mathsf{int}$.
+
+$$
+\frac{\Gamma\vdash e_1:\mathsf{dict}\langle\tau_K,\tau_V\rangle \quad
+      \Gamma\vdash e_2:\tau_K}
+     {\Gamma\vdash e_1[e_2]:\tau_V}
+\qquad
+\frac{\Gamma\vdash e_1:\mathsf{dict}\langle\tau_K,\tau_V\rangle \quad
+      \Gamma\vdash e_2:\tau_K \quad
+      \Gamma\vdash e_3:\tau' \quad \tau'\sim\tau_V}
+     {\Gamma\vdash \mathsf{store}(e_1,e_2,e_3):\mathsf{dict}\langle\tau_K,\tau_V\rangle}
+$$
+
+$$
+\frac{\tau_K\in\{\mathsf{str},\mathsf{int}\} \quad
+      \Gamma\vdash \bar k:\tau_K \quad
+      \Gamma\vdash \bar e:\bar\tau \quad
+      \forall i.\ \tau_i\sim\tau_V}
+     {\Gamma\vdash \mathsf{dict}\langle\tau_K,\tau_V\rangle\{\overline{k_i:e_i}\}:\mathsf{dict}\langle\tau_K,\tau_V\rangle}
+$$
+
 **Pointers.**
 
 $$
@@ -582,13 +631,17 @@ $$
 $$
 
 $$
-\frac{\Gamma\vdash e:\tau \quad \tau\in\\{\mathsf{bool},\mathsf{int},\mathsf{float}\\}}
+$$\frac{\Gamma\vdash e:\tau \quad \tau\in\{\mathsf{bool},\mathsf{int},\mathsf{float}\}}
      {\Gamma\vdash \mathsf{pybox}(e):\mathsf{pyobj}\langle\mathsf{object}\rangle}
 \qquad
 \frac{\Gamma\vdash e:\mathsf{pyobj}\langle t\rangle \quad
-      \tau\in\\{\mathsf{bool},\mathsf{int},\mathsf{float}\\}}
+      \tau\in\{\mathsf{bool},\mathsf{int},\mathsf{float}\}\cup\{\mathsf{struct}\,S,\mathsf{dict}\langle\tau_K,\tau_V\rangle\}}
      {\Gamma\vdash \mathsf{pyunbox}\langle\tau\rangle(e):\tau}
 $$
+
+Unboxing is **runtime-checked**: the target may be a primitive, a struct, or a
+dict; the conversion itself is a rigid uninterpreted operation
+$\mathcal{U}^{\mathsf{unbox}}$ (no algebraic laws are assumed).
 
 **Strings.**
 
@@ -720,6 +773,11 @@ $$
 - **Purity of expressions.** Expressions never mutate $\sigma$ or $H$; the
   "store" and "setfield" constructs are *functional* updates that produce new
   array/struct values. Only statements mutate the store and heap.
+- **Dictionaries as arrays.** A `dict<K,V>` is encoded in Z3 as
+  `Array(K, V)`; the intro form `dict<K,V>{k:v,...}` is a chain of functional
+  stores over a fixed empty base array, and `d[k]` / `d[k]=v` are the same
+  `Select`/`Store` operations used for arrays. Keys are restricted to `str` or
+  `int`.
 - **Pointers as locations.** There is no allocation construct; pointer values
   originate from parameters (a fresh heap is supplied at call time) and are
   manipulated only by `@` (offset) and `*` (deref / store).
