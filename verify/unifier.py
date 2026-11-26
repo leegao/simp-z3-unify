@@ -42,6 +42,9 @@ class DischargedPredicate:
     rhs_str: str
     method: str  # "exact_wl", "ring_fp_z3", "lsh_z3", "congruence_cascade", "holed_template"
     template_str: str | None = None
+    elapsed_ms: float = 0.0
+    lhs_expr: object = None
+    rhs_expr: object = None
 
 
 @dataclass
@@ -55,6 +58,8 @@ class UnifyResult:
     elapsed_ms: float
     discharged: list[DischargedPredicate] = field(default_factory=list)
     counterexample: str | None = None
+    lhs_template: object = None
+    rhs_template: object = None
 
 
 def collect_dag_nodes(expr: z3.ExprRef) -> list[z3.ExprRef]:
@@ -310,7 +315,7 @@ def verify_equiv_bu_wlau(
                 uf.union(u.get_id(), v.get_id())
                 hname = f"hm_{hole_counter[0]}"
                 hole_counter[0] += 1
-                discharged.append(DischargedPredicate(hname, _short_str(u), _short_str(v), "exact_wl"))
+                discharged.append(DischargedPredicate(hname, _short_str(u), _short_str(v), "exact_wl", None, 0.0, u, v))
 
     # Stage 2a: Algebraic-invariant semantic fingerprinting (2 independent F_p / bool / array points)
     envs_fp = [{"_seed": 1}, {"_seed": 2}]
@@ -403,21 +408,23 @@ def verify_equiv_bu_wlau(
                 uf.union(uid, vid)
                 hname = f"hm_{hole_counter[0]}"
                 hole_counter[0] += 1
-                discharged.append(DischargedPredicate(hname, _short_str(u), _short_str(v), "congruence_cascade"))
+                discharged.append(DischargedPredicate(hname, _short_str(u), _short_str(v), "congruence_cascade", None, 0.0, u, v))
                 continue
         # Local Z3 oracle discharge
         z3_local_calls += 1
+        _t0 = time.perf_counter()
         status, _ = _z3_check_equiv(u, v, preconds, timeout_ms=local_timeout_ms)
+        _dt = (time.perf_counter() - _t0) * 1000.0
         if status == "unsat":
             uf.union(uid, vid)
             hname = f"hm_{hole_counter[0]}"
             hole_counter[0] += 1
-            discharged.append(DischargedPredicate(hname, _short_str(u), _short_str(v), tag))
+            discharged.append(DischargedPredicate(hname, _short_str(u), _short_str(v), tag, None, _dt, u, v))
 
     # Stage 4: Maximal non-overlapping DAG covering + monotonic DAG-size guard
     if uf.same(lhs.get_id(), rhs.get_id()):
         dt = (time.perf_counter() - t0) * 1000.0
-        return UnifyResult(True, "unsat", nodes_before, 1, len(cands), z3_local_calls, dt, discharged)
+        return UnifyResult(True, "unsat", nodes_before, 1, len(cands), z3_local_calls, dt, discharged, None, lhs, rhs)
 
     # Map every non-trivial unified class with >=2 distinct nodes to a fresh Skolem hole hm_k
     cls_members: dict[int, set[int]] = {}
@@ -472,4 +479,6 @@ def verify_equiv_bu_wlau(
         elapsed_ms=dt,
         discharged=discharged,
         counterexample=model_str,
+        lhs_template=l_abs,
+        rhs_template=r_abs,
     )

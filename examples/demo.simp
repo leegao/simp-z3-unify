@@ -15,6 +15,6 @@ fn main(x: float, flag: bool) -> float {
   d["a"] = m;
   // Runtime-checked unboxing into a struct (in addition to primitives).
   // let q: Point = unbox<Point>(t);
-  let z: float = flag ? add(d["a"], p.x) : (x * 2.0 + p.y);
+  let z: float = flag ? add(d["a"], p.x) : (x * 2.0 - p.y);
   return z;
 }
