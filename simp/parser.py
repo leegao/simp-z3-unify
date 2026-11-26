@@ -18,8 +18,23 @@ of its children). The result is a fully-typed :class:`simp.ast.Program`.
 
 from __future__ import annotations
 
-import ast as _pyast
 import sys
+
+# Allow direct execution (``python simp/parser.py``) in addition to
+# ``python -m simp.parser``. When run directly, ``sys.path[0]`` is the ``simp/``
+# directory, which would shadow the stdlib ``ast``/``types`` modules with
+# ``simp/ast.py``/``simp/types.py``. Drop it, add the project root, and set
+# ``__package__`` so the relative imports below resolve.
+if __package__ in (None, ""):
+    import os
+
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _root = os.path.dirname(_script_dir)
+    sys.path[:] = [p for p in sys.path if os.path.abspath(p or os.getcwd()) != _script_dir]
+    sys.path.insert(0, _root)
+    __package__ = "simp"
+
+import ast as _pyast
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 
@@ -57,9 +72,11 @@ from .ast import (
     StrSubstr,
     StructDecl,
     StructInit,
+    TypeErrorSIMP,
     UnOp,
     Var,
     WhileStmt,
+    typecheck_program,
 )
 from .types import (
     BOOL,
@@ -535,6 +552,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("file", help="input .simp source file")
     p.add_argument("-o", "--output", help="write to this file instead of stdout")
     p.add_argument("--indent", type=int, default=2, help="indentation width (default: 2)")
+    p.add_argument(
+        "--typecheck",
+        action="store_true",
+        help="run typecheck_program on the parsed AST and report type errors",
+    )
     args = p.parse_args(argv)
 
     try:
@@ -543,6 +565,14 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, SIMPParseError, LarkError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+
+    if args.typecheck:
+        try:
+            typecheck_program(prog)
+        except TypeErrorSIMP as e:
+            print(f"type error: {e}", file=sys.stderr)
+            return 1
+        print("typecheck: OK", file=sys.stderr)
 
     out = format_ast(prog, indent=args.indent)
     if args.output:
