@@ -1,4 +1,4 @@
-import numpy as np
+import math as math
 
 struct Point { x: float, y: float }
 
@@ -8,13 +8,13 @@ fn add(a: float, b: float) -> float {
 
 fn main(x: float, flag: bool) -> float {
   let p: Point = Point { x: x, y: 1.0 };
-  let t: pyobj = np.tanh(x);
+  let t: pyobj = math.tanh(x);
   let m: float = unbox<float>(t);
   // Native dictionary: intro form + subscript load/store.
   let d: dict<str, float> = dict<str, float> { "a": x, "b": 1.0 };
   d["a"] = m;
   // Runtime-checked unboxing into a struct (in addition to primitives).
-  let q: Point = unbox<Point>(t);
-  let z: float = flag ? add(d["a"], q.x) : (x * 2.0 + p.y);
+  // let q: Point = unbox<Point>(t);
+  let z: float = flag ? add(d["a"], p.x) : (x * 2.0 + p.y);
   return z;
 }
