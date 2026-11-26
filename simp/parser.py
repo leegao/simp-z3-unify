@@ -57,11 +57,9 @@ from .simp_ast import (
     StrSubstr,
     StructDecl,
     StructInit,
-    TypeErrorSIMP,
     UnOp,
     Var,
     WhileStmt,
-    typecheck_program,
 )
 from .simp_types import (
     BOOL,
@@ -77,6 +75,7 @@ from .simp_types import (
     TStruct,
     Type,
 )
+from .typecheck import TypeErrorSIMP, typecheck_program
 
 # --------------------------------------------------------------------------- #
 # Grammar (loaded from simp/simp.lark)
