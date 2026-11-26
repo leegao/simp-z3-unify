@@ -30,6 +30,9 @@ For the full C++/Z3 shader pipeline, see `valhall2vulkan/tools/equivalence/tools
 | `lower_simp.py` | `SimpToCoreLowerer` — lower structured `s-imp` programs into CoreSSA-IR with explicit Memory-SSA threading. |
 | `tests.py` | 10 unit tests for the core anti-unifier (moves, AC/A-only, inverses, aliasing, loops, s-imp, CFG). |
 | `test_gpu_ir.py` | 3 unit tests for the GPU pipeline (direct vs ddk vs panfrost vs spirv-dis, constant folding, inductive axioms/falsification). |
+| `cli_spirv.py` | **CLI**: 2-way equivalence checking for a `.spv` shader (`python -m core_ir.cli_spirv shader.spv --pair direct:ddk`). |
+| `cli_simp.py` | **CLI**: equivalence checking for a `.simp` program across passes (`python -m core_ir.cli_simp examples/demo.simp`). |
+| `cli_common.py` | Shared result/printing/JSON helpers used by both CLIs. |
 | `benchmark.py` | `run_benchmarks()` — workloads + scaling study comparing AU vs monolithic Z3. |
 | `sweep_samples.py` | Batch sweep over a directory of `.spv` shaders, verifying direct/ddk/panfrost pairwise. |
 
@@ -48,6 +51,16 @@ For the full C++/Z3 shader pipeline, see `valhall2vulkan/tools/equivalence/tools
 .venv/bin/python -m core_ir.benchmark
 ```
 
+## Quick CLI Reference
+
+```bash
+# SPIR-V / ValhallSSA: 2-way equivalence (default pair direct:ddk)
+.venv/bin/python -m core_ir.cli_spirv shader.spv --pair direct:panfrost
+
+# .simp: original vs optimized (default passes const_fold,cse,dce)
+.venv/bin/python -m core_ir.cli_simp examples/demo.simp
+```
+
 ---
 
 ## Equivalence Checking for SPIR-V / SSA-IR
@@ -60,65 +73,42 @@ There are three supported frontends, all producing the same `CoreShaderProgram`
 2. **SPIR-V disassembly** via `lower_spirv_dis_to_core` (uses system `spirv-dis`).
 3. **Unstructured SSA-CFG** via `lower_cfg_to_core` (hand-built or from any SSA CFG).
 
-### Option A — One-shot script (ValhallSSA direct vs ddk vs panfrost vs spirv-dis)
+### Option A — `core_ir.cli_spirv` (2-way CLI, recommended)
 
-The snippet below reproduces `core_ir/test_gpu_ir.py::test_01` against any `.spv`.
-It shells out to `valhall2vulkan/build/spirv2valhall` for the three Valhall routes
-and to system `spirv-dis` for the SPIR-V route, then proves all four equivalent.
+The CLI lowers one `.spv` through the requested routes and proves a single
+ordered pair equivalent. Pick the pair with `--pair LHS:RHS` (or `--lhs`/`--rhs`).
+Routes: `direct`, `ddk`, `panfrost` (ValhallSSA via
+`valhall2vulkan/build/spirv2valhall`) and `spirv` (system `spirv-dis`).
 
-```python
-import subprocess
-from core_ir.axioms import ProofSession, build_gpu_axiom_store
-from core_ir.gpu_dialect import build_gpu_registry
-from core_ir.lower_valhall_ssa import lower_valhall_ssa_to_core
-from core_ir.lower_spirv import lower_spirv_dis_to_core
+```bash
+# default pair: direct vs ddk
+.venv/bin/python -m core_ir.cli_spirv shader.spv
 
-S2V  = "/home/leegao/meh/valhall2vulkan/build/spirv2valhall"
-MALI = "/home/leegao/meh/valhall2vulkan/mali_offline_compiler/graphics/libMali-Gxx_r55p0-00rel0.so"
-PAN  = "/home/leegao/meh/valhall2vulkan/third_party/prebuilts/panfrost/panfrost_compile"
-SPV  = "/home/leegao/meh/valhall2vulkan/samples/comp_rep_minimal.spv"
+# choose the pair explicitly
+.venv/bin/python -m core_ir.cli_spirv shader.spv --pair direct:panfrost
+.venv/bin/python -m core_ir.cli_spirv shader.spv --lhs ddk --rhs spirv
 
-def emit(*args: str) -> str:
-    return subprocess.run([S2V, SPV, *args], capture_output=True, text=True, timeout=15).stdout
-
-ssa_direct = emit("--direct-ssa", "--opt-ssa")
-ssa_ddk    = emit("--dump-ssa", "--defau", "--opt-ssa", "--mali-lib", MALI)
-ssa_pan    = emit("--panfrost", "--dump-ssa", "--defau", "--opt-ssa", "--panfrost-bin", PAN)
-spv_dis    = subprocess.run(["spirv-dis", SPV], capture_output=True, text=True).stdout
-
-reg     = build_gpu_registry(fp_fast_math=True)
-axioms  = build_gpu_axiom_store(include_fast_math=True)
-
-progs = {
-    "direct":   lower_valhall_ssa_to_core(ssa_direct, "comp", "direct"),
-    "ddk":      lower_valhall_ssa_to_core(ssa_ddk,    "comp", "ddk"),
-    "panfrost": lower_valhall_ssa_to_core(ssa_pan,    "comp", "panfrost"),
-    "spirv":    lower_spirv_dis_to_core(spv_dis,      "comp"),
-}
-
-base = progs["direct"]
-for label, rhs in progs.items():
-    if label == "direct":
-        continue
-    sess = ProofSession(base.outputs, rhs.outputs, reg, axioms)
-    ok = sess.verify()
-    print(f"direct vs {label:9s}: {'PROVED' if ok else 'FAILED'}")
-    for fo in sess.failed_obligations:
-        print(fo.summary())
+# machine-readable output + per-obligation detail
+.venv/bin/python -m core_ir.cli_spirv shader.spv --pair direct:spirv --json out.json -v
 ```
 
-Expected output:
+Flags of note: `--s2v` / `--mali` / `--pan` override the default
+`valhall2vulkan` tool paths; `--strict-fp` disables fast-math FP axioms;
+`--z3-timeout` sets the per-channel Z3 budget. Exit code is `0` iff the pair
+is proved, `1` on a counterexample/lowering failure, `2` on bad arguments.
+
+Example run against `samples/comp_rep_minimal.spv`:
 
 ```
-direct vs ddk      : PROVED
-direct vs panfrost : PROVED
-direct vs spirv    : PROVED
+  [PROVED] direct:ddk                   |     0.00 ms | z3=0 struct=0 loops=0
+------------------------------------------------------------------------------
+  total=1  proved=1  failed=0  error=0
 ```
 
 ### Option B — Batch sweep over a corpus
 
-`sweep_samples.py` automates Option A over every `*.spv` in a directory (plus
-optional extras), verifying `direct_vs_ddk`, `direct_vs_panfrost`, and
+`sweep_samples.py` automates pairwise checking over every `*.spv` in a directory
+(plus optional extras), verifying `direct_vs_ddk`, `direct_vs_panfrost`, and
 `ddk_vs_panfrost` with a 4 s per-pair alarm and JSON output:
 
 ```bash
@@ -160,6 +150,39 @@ assert res.equivalent
 
 For unstructured CFGs, build a `CFGFunction` (see `core_ir/tests.py::test_10`)
 and call `lower_cfg_to_core(cfg)` before `verify_functions`.
+
+---
+
+## Equivalence Checking for `.simp` Programs — `core_ir.cli_simp`
+
+`core_ir.cli_simp` parses and typechecks a `.simp` file, applies a selectable
+set of optimization passes to produce the RHS, lowers both sides to CoreSSA-IR
+with `SimpToCoreLowerer`, and proves every function (or a single `--entry`)
+equivalent with `CoreSSAAntiUnifier`.
+
+```bash
+# default: original vs const_fold+cse+dce, all functions
+.venv/bin/python -m core_ir.cli_simp examples/demo.simp
+
+# identity check (no passes), single function
+.venv/bin/python -m core_ir.cli_simp examples/demo.simp --passes none -e main
+
+# pick passes, JSON output, per-obligation detail
+.venv/bin/python -m core_ir.cli_simp examples/demo.simp --passes const_fold,dce --json out.json -v
+```
+
+Available passes: `const_fold`, `cse`, `mem_licm`, `dce` (or `all` / `none`).
+Exit code is `0` iff every checked function is proved. Example:
+
+```
+  [PROVED] add [const_fold+cse+dce]     |     0.15 ms | z3=0 struct=0 loops=0
+  [PROVED] main [const_fold+cse+dce]    |     4.64 ms | z3=1 struct=0 loops=0
+------------------------------------------------------------------------------
+  total=2  proved=2  failed=0  error=0
+```
+
+(The `main` proof discharges one residual `mul(x, 2.0) ~ add(x, x)` leaf in Z3;
+`add` is fully structural.)
 
 ---
 

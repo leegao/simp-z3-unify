@@ -68,6 +68,11 @@ def lower_spirv_dis_to_core(spv_text: str, name: str = "spv_shader") -> CoreShad
     var_bases: dict[str, CoreVal] = {}
     vals: dict[str, CoreVal] = {}
     ptr_exprs: dict[str, CoreVal] = {}
+    # Output variables (OpVariable with a StorageClass other than the private
+    # Function storage class), keyed by result id. `OpStore` into one of these
+    # becomes an observable output channel instead of a Memory-SSA heap write.
+    output_vars: dict[str, tuple[str, str]] = {}
+    locations: dict[str, int] = {}
 
     heap_ty = TArray(BV64, BV32)
     heap: CoreVal = ParamVal("__heap0", heap_ty)
@@ -97,6 +102,8 @@ def lower_spirv_dis_to_core(spv_text: str, name: str = "spv_shader") -> CoreShad
                     bindings[tgt] = int(val)
                 elif dec == "ArrayStride":
                     array_strides[tgt] = int(val)
+                elif dec == "Location":
+                    locations[tgt] = int(val)
             continue
 
         if line.startswith("OpMemberDecorate "):
@@ -138,6 +145,15 @@ def lower_spirv_dis_to_core(spv_text: str, name: str = "spv_shader") -> CoreShad
                     iv = int(raw_v, 0)
                     consts[res_id] = ConstVal(iv & (0xFFFFFFFFFFFFFFFF if ty == BV64 else 0xFFFFFFFF), ty)
                 vals[res_id] = consts[res_id]
+            elif op == "OpConstantComposite" and len(toks) >= 2:
+                ty = types.get(toks[0], BV32)
+                cargs = tuple(vals.get(o, SymVal(o, ty)) for o in toks[1:])
+                if isinstance(ty, TVector):
+                    vop = {2: "vh.vec2", 3: "vh.vec3", 4: "vh.vec4"}.get(len(cargs), "vh.vec4")
+                    consts[res_id] = OpApp(vop, cargs, ty)
+                else:
+                    consts[res_id] = OpApp("spv.const_composite", cargs, ty)
+                vals[res_id] = consts[res_id]
             elif op == "OpConstantTrue":
                 consts[res_id] = ConstVal(True, BOOL)
                 vals[res_id] = consts[res_id]
@@ -145,6 +161,10 @@ def lower_spirv_dis_to_core(spv_text: str, name: str = "spv_shader") -> CoreShad
                 consts[res_id] = ConstVal(False, BOOL)
                 vals[res_id] = consts[res_id]
             elif op == "OpVariable":
+                # %res = OpVariable %ptr StorageClass [initializer]
+                storage = toks[1] if len(toks) >= 2 else "Function"
+                if storage in ("Output", "Input"):
+                    output_vars[res_id] = (storage, res_id)
                 dset = desc_sets.get(res_id, 0)
                 bind = bindings.get(res_id)
                 if bind is not None:
@@ -207,10 +227,20 @@ def lower_spirv_dis_to_core(spv_text: str, name: str = "spv_shader") -> CoreShad
             if line.startswith("OpStore "):
                 toks = line.split()
                 if len(toks) >= 3:
-                    addr = ptr_exprs.get(toks[1], vals.get(toks[1], SymVal(toks[1], BV64)))
+                    tgt = toks[1]
                     val = vals.get(toks[2], SymVal(toks[2], BV32))
-                    heap = OpApp("arr.store", (heap, addr, val), heap_ty)
-                    outputs["__heap"] = heap
+                    if tgt in output_vars:
+                        storage, var_id = output_vars[tgt]
+                        if storage == "Output":
+                            loc = locations.get(var_id)
+                            chan = f"frag_color:{loc}" if loc is not None else f"frag_color:{var_id}"
+                            outputs[chan] = val
+                        else:
+                            outputs[f"input:{var_id}"] = val
+                    else:
+                        addr = ptr_exprs.get(tgt, vals.get(tgt, SymVal(tgt, BV64)))
+                        heap = OpApp("arr.store", (heap, addr, val), heap_ty)
+                        outputs["__heap"] = heap
             elif line.startswith("OpKill") or line.startswith("OpDemoteToHelperInvocation"):
                 outputs["__alive"] = ConstVal(False, BOOL)
 
