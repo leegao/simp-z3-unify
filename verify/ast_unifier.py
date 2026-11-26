@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 import z3
 
-from simp.ast import (
+from simp.simp_ast import (
     ArrLoad,
     ArrStoreExpr,
     ArrStoreStmt,
@@ -38,7 +38,7 @@ from simp.ast import (
     Var,
     WhileStmt,
 )
-from simp.types import (
+from simp.simp_types import (
     INT,
 )
 

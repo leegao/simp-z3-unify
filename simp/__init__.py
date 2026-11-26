@@ -1,2 +1,2 @@
-from .ast import *
-from .types import *
+from .simp_ast import *
+from .simp_types import *

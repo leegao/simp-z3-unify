@@ -1,7 +1,7 @@
 """Concrete parser for s-imp.
 
 The grammar lives in ``simp/simp.lark`` (EBNF, Lark syntax) and the parse tree is
-"discharged" directly into the dataclasses in :mod:`simp.ast`.
+"discharged" directly into the dataclasses in :mod:`simp.simp_ast`.
 
 A few AST nodes share a single surface form and are therefore resolved in a
 type-directed way while building the tree (mirroring ``typecheck_program``):
@@ -13,7 +13,7 @@ type-directed way while building the tree (mirroring ``typecheck_program``):
 
 Because those decisions need the *type* of sub-expressions, the builder threads a
 type environment top-down (a plain bottom-up ``Transformer`` cannot see the types
-of its children). The result is a fully-typed :class:`simp.ast.Program`.
+of its children). The result is a fully-typed :class:`simp.simp_ast.Program`.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ from pathlib import Path
 from lark import Lark, Token, Tree
 from lark.exceptions import LarkError
 
-from . import ast as _pyast
-from .ast import (
+from . import simp_ast as _pyast
+from .simp_ast import (
     ArrLoad,
     ArrStoreStmt,
     Assign,
@@ -63,7 +63,7 @@ from .ast import (
     WhileStmt,
     typecheck_program,
 )
-from .types import (
+from .simp_types import (
     BOOL,
     BUILTIN_SIGS,
     FLOAT,

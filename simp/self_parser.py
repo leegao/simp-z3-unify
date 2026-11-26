@@ -1,7 +1,7 @@
 from verify.symexec import SymbolicExecutor
 from verify.unifier import verify_equiv_bu_wlau
 
-from .ast import (
+from .simp_ast import (
     Assign,
     BinOp,
     Const,
@@ -24,7 +24,7 @@ from .ast import (
     typecheck_program,
 )
 from .passes import const_fold_pass, cse_pass, dce_pass
-from .types import BOOL, INT, STR
+from .simp_types import BOOL, INT, STR
 
 
 def build_self_hosted_simp_parser() -> Program:

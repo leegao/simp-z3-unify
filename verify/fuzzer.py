@@ -2,7 +2,7 @@ import random
 import time
 from dataclasses import dataclass
 
-from .ast import (
+from simp.simp_ast import (
     ArrLoad,
     ArrStoreStmt,
     Assign,
@@ -33,7 +33,7 @@ from .ast import (
     WhileStmt,
     typecheck_program,
 )
-from .passes import (
+from simp.passes import (
     buggy_opt_pass,
     const_fold_pass,
     cse_pass,
@@ -41,7 +41,7 @@ from .passes import (
     mem_licm_pass,
 )
 from .symexec import SymbolicExecutor
-from .types import BOOL, FLOAT, INT, PYOBJ, TArray, TPtr
+from simp.simp_types import BOOL, FLOAT, INT, PYOBJ, TArray, TPtr
 from .unifier import verify_equiv_bu_wlau
 
 

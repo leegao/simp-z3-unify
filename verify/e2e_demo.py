@@ -1,6 +1,6 @@
 from collections.abc import Callable
 
-from simp.ast import (
+from simp.simp_ast import (
     ArrLoad,
     ArrStoreStmt,
     Assign,
@@ -29,7 +29,7 @@ from simp.passes import (
     dce_pass,
     mem_licm_pass,
 )
-from simp.types import BOOL, FLOAT, INT, TArray, TPtr
+from simp.simp_types import BOOL, FLOAT, INT, TArray, TPtr
 
 from .symexec import SymbolicExecutor
 from .unifier import verify_equiv_bu_wlau

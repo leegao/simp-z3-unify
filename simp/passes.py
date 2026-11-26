@@ -1,6 +1,6 @@
 import copy
 
-from .ast import (
+from .simp_ast import (
     ArrLoad,
     ArrStoreExpr,
     ArrStoreStmt,
@@ -35,7 +35,7 @@ from .ast import (
     Var,
     WhileStmt,
 )
-from .types import BOOL, FLOAT, INT, STR
+from .simp_types import BOOL, FLOAT, INT, STR
 
 
 def _expr_vars(e: Expr) -> set[str]:

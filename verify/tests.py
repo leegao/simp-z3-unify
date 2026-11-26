@@ -1,6 +1,6 @@
 import unittest
 
-from .ast import (
+from simp.simp_ast import (
     FuncDecl,
     Program,
     ReturnStmt,
@@ -9,8 +9,8 @@ from .ast import (
     typecheck_program,
 )
 from .e2e_demo import build_demo_program, verify_pass
-from .passes import buggy_opt_pass, const_fold_pass, cse_pass, dce_pass, mem_licm_pass
-from .types import FLOAT, INT
+from simp.passes import buggy_opt_pass, const_fold_pass, cse_pass, dce_pass, mem_licm_pass
+from simp.simp_types import FLOAT, INT
 
 
 class TestSIMPVerify(unittest.TestCase):
