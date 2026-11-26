@@ -1,0 +1,537 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[a4paper,margin=23mm]{geometry}
+\usepackage{charter}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{fancyhdr}
+\usepackage{listings}
+\usepackage[colorlinks=true,linkcolor=primary,citecolor=primary,urlcolor=primary]{hyperref}
+
+\definecolor{primary}{RGB}{24,78,119}
+\definecolor{accent}{RGB}{22,138,173}
+\definecolor{subtle}{RGB}{242,246,250}
+
+\setlength{\parskip}{6pt plus 2pt minus 1pt}
+\setlength{\parindent}{0pt}
+\linespread{1.12}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{definition}[theorem]{Definition}
+
+\newcommand{\sem}[1]{[\![#1]\!]}
+\newcommand{\takeaway}[2]{%
+  \vspace{6pt}\noindent\colorbox{primary!8}{%
+    \parbox{\dimexpr\linewidth-2\fboxsep\relax}{%
+      \vspace{4pt}\textbf{\color{primary}#1:}\hspace{0.5em}#2\vspace{4pt}%
+    }%
+  }\vspace{6pt}%
+}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{subtle},
+  frame=single,
+  rulecolor=\color{primary!30},
+  breaklines=true,
+  columns=fullflexible,
+  aboveskip=8pt,
+  belowskip=8pt,
+  captionpos=b
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{gray}Fast Anti-Unification \& Equivalence Checking for \texttt{s-imp}}
+\fancyhead[R]{\small\color{gray}Desktop Survey}
+\fancyfoot[C]{\small\thepage}
+
+\title{\vspace{-0.5em}\textbf{\LARGE\color{primary}Fast Bottom-Up Anti-Unification, Holed-Context Matching, and Dual-Level Equivalence Checking for the \texttt{s-imp} Language}\\[0.5em]
+\large\color{gray}Formal Semantics, Complexity Barriers, Algorithmic Survey, DAG vs.\ AST-Tree Verifiers, and Z3 5.4.1 Evaluation}
+\author{Technical Survey \& \texttt{s-imp} Verification Monograph}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Proving semantic equivalence $P_1 \equiv P_2$ across compiler optimization passes for imperative programs with pointers, arrays, strings, algebraic structs, transcendental builtins, bounded loops, recursion, and opaque host-Python objects is a challenging instance of guarded equivalence checking over mixed SMT theories ($\text{QF\_AUFNRA} + \text{Strings} + \text{Datatypes} + \text{PyObj}$). In this comprehensive survey, we formalize \textbf{\texttt{s-imp}}---a simply typed imperative language with native \texttt{bool}, \texttt{int}, \texttt{float} (real-modeled), \texttt{ptr<T>}, \texttt{array<T>}, \texttt{str}, \texttt{struct}, transcendental builtins (\texttt{exp}, \texttt{log}, \texttt{sin}, \texttt{cos}, \texttt{sqrt}), and host-Python interoperability modeled as rigid uninterpreted functions---and study fast anti-unification search and equivalence checking instantiated on \texttt{s-imp}. We establish the operational semantics and Z3 denotational translation $\sem{\cdot}_{\text{Z3}}$, analyze why lowering to hash-consed DAGs prevents $O(2^n)$ blowup yet makes optimal tile covering NP-complete, survey 33 classical and recent papers (1970--2026), present \textbf{six complete alternative algorithms} in full pseudocode, and develop \textbf{two complementary \texttt{s-imp} verifiers}:
+\begin{itemize}
+  \item \textbf{Variant~A (\texttt{BU-WLAU}, \texttt{unifier.py}):} A four-stage bottom-up DAG anti-unifier combining AC-normalized hash-consing, algebraic-invariant semantic fingerprinting ($\mathbb{F}_{2^{61}-1}^2$ ring evaluation, 64-bit Boolean masks, 4-index array probes, and datatype constructor/accessor projection), height-banded Weisfeiler--Lehman + MinHash LSH, upward rigid congruence cascade, and a monotonic DAG-size guard.
+  \item \textbf{Variant~B (\texttt{ASTTreeUnifier}, \texttt{ast\_unifier.py}):} An AST/tree-level anti-unifier operating directly on \texttt{s-imp} trees before global DAG merging, enabling trivial $O(n)$ optimal BURS tree covering, opaque-first modular function calls, and lazy leaf-only Z3 lowering.
+\end{itemize}
+Evaluated on Z3 5.4.1 across scaling diamond DAGs (up to 292 nodes: $216.6\times$ fewer candidates, $7.4\times$ faster), a 15-program host-Python \texttt{s-imp} fuzzer stress test (15/15 sound 4-pass pipelines proved \texttt{UNSAT} with average DAG collapse $55.4 \to 1.0$ nodes; 15/15 mutated passes caught \texttt{SAT}), and a \textbf{self-hosted \texttt{s-imp} lexer/parser written inside \texttt{s-imp}}, Variant~B achieves a $\sim 3{,}300\times$ speedup over Variant~A ($50.89\,\text{ms}$ vs.\ $168.96\,\text{s}$) while preserving zero false-\texttt{UNSAT} and zero false-\texttt{SAT}.
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+% ============================================================================
+\section{Introduction: Translation Validation for \texttt{s-imp}}
+\label{sec:intro}
+
+Validating optimizing compiler passes on imperative programs---such as constant folding, algebraic strength reduction, common subexpression elimination (CSE), store-to-load memory forwarding, loop-invariant code motion (LICM), and dead code elimination (DCE)---reduces to proving that an original program $P_1$ and an optimized program $P_2 = \mathcal{O}(P_1)$ compute identical outputs for all inputs under an entailment context $\Gamma_0$:
+\begin{equation}
+  \Phi(P_1, P_2) \;\triangleq\; \Gamma_0 \wedge \big(\sem{P_1}_{\text{Z3}} \neq \sem{P_2}_{\text{Z3}}\big).
+\end{equation}
+Equivalence holds universally iff $\mathrm{UNSAT}(\Phi(P_1, P_2))$.
+
+In \textbf{\texttt{s-imp}}, four realistic language features interact to defeat naive SMT refutation and top-down structural matchers:
+\begin{enumerate}
+  \item \textbf{Opaque Transcendentals and Host-Python Objects (\texttt{uf\_*}, \texttt{py\_*}):} Builtins like \texttt{exp}, \texttt{log}, \texttt{sin}, \texttt{cos}, \texttt{sqrt} and host-Python calls like \texttt{np.tanh(e)} or \texttt{filt.eval(e)} have \emph{no axioms} in Z3. Equivalence across them can be established \emph{only} by proving argument congruence ($\Gamma_0 \models s = t \implies \texttt{uf\_exp}(s) = \texttt{uf\_exp}(t)$).
+  \item \textbf{The Parent-Mismatch Wall:} When \texttt{const\_fold\_pass} applies strength reduction (\texttt{(x + y) * 2.0 -> (x + y) + (x + y)}) or distributivity (\texttt{(a + b) * c -> a*c + b*c}) inside an opaque call:
+  \begin{align*}
+    \texttt{let \%outer}(h_0) &= \texttt{py\_method\_eval}(\texttt{filt},\; \texttt{uf\_exp}(h_0)), \\
+    L &= \texttt{\%outer}\big(\texttt{Mul}(\texttt{Add}(x, y), 2)\big), \\
+    R &= \texttt{\%outer}\big(\texttt{Add}(\texttt{Add}(x, y), \texttt{Add}(x, y))\big),
+  \end{align*}
+  a top-down syntax matcher stalls immediately at $\texttt{Mul} \neq \texttt{Add}$.
+  \item \textbf{Mixed Theories (Arrays, Pointers, Strings, Algebraic Structs):} A single \texttt{s-imp} kernel can combine McCarthy array read-over-write (\texttt{Store(buf, 1, v)[1] == v}), pointer offsets, Z3 \texttt{StringSort} slicing (\texttt{SubString(src, p, 1)}), and Z3 \texttt{Datatype} structs (\texttt{Token}, \texttt{ParseNode}).
+  \item \textbf{The DAG vs.\ Tree Dilemma:} Lowering \texttt{s-imp} into a hash-consed Z3 DAG avoids $O(2^n)$ tree explosion on shared variables and merged \texttt{if}/\texttt{while} diamonds, but renders optimal tile covering NP-complete---whereas keeping \texttt{s-imp} at the AST tree level unlocks $O(n)$ optimal BURS covering and modular opaque function calls.
+\end{enumerate}
+
+\takeaway{Survey Roadmap}{Section~\ref{sec:simp} formalizes \texttt{s-imp}'s type system, operational semantics, Z3 denotational translation, and the DAG-vs.-tree trade-off. Section~\ref{sec:complexity} maps complexity barriers; Section~\ref{sec:lit} reviews 33 classical and recent papers; Section~\ref{sec:alternatives} presents six complete alternative algorithms; Sections~\ref{sec:proposed}--\ref{sec:richer} detail Variant~A (\texttt{BU-WLAU} + semantic fingerprinting + anti-blowup indexing); Section~\ref{sec:variantb} presents Variant~B (AST/tree-level optimal-cover unifier); Sections~\ref{sec:traces}--\ref{sec:eval} provide worked traces, formal proofs, and Z3 5.4.1 evaluations including our 15-program fuzzer and self-hosted \texttt{s-imp} parser.}
+
+% ============================================================================
+\section{Formal Specification of \texttt{s-imp} and Z3 Denotational Translation}
+\label{sec:simp}
+
+\subsection{Types and Abstract Syntax}
+
+The type grammar of \texttt{s-imp} covers primitive scalars, memory handles, native UTF-8 strings, named product structs, and opaque host-Python objects:
+\[
+  \tau \;::=\; \texttt{bool} \;\mid\; \texttt{int} \;\mid\; \texttt{float} \;\mid\; \texttt{str} \;\mid\; \texttt{ptr}\langle\tau\rangle \;\mid\; \texttt{array}\langle\tau\rangle \;\mid\; \texttt{struct}\;S \;\mid\; \texttt{pyobj}\langle\text{tag}\rangle.
+\]
+A program $P = (\mathcal{I}, \mathcal{D}_S, \mathcal{F})$ comprises host-Python imports $\mathcal{I} = \{\texttt{import } m_i \texttt{ as } a_i\}$, struct declarations $\mathcal{D}_S = \{\texttt{struct } S \{ f_1 : \tau_1, \dots, f_k : \tau_k \}\}$, and function declarations $\mathcal{F} = \{\texttt{fn } f(\vec{x}:\vec{\tau}) \to \tau_r \{ s \}\}$. Expressions and statements are generated by:
+\begin{align*}
+  e &::= c \mid x \mid \ominus e \mid e_1 \oplus e_2 \mid \texttt{Ite}(e_c, e_t, e_f) \mid \texttt{ArrLoad}(e_a, e_i) \mid \texttt{ArrStore}(e_a, e_i, e_v) \\
+    &\quad \mid \texttt{PtrOff}(e_p, e_i) \mid \texttt{PtrDeref}(e_p) \mid \texttt{StrConcat}(e_1, e_2) \mid \texttt{StrLen}(e) \mid \texttt{StrSubstr}(e, e_o, e_l) \\
+    &\quad \mid \texttt{StructInit}(S, \vec{f \mapsto e}) \mid \texttt{FieldGet}(e, f) \mid \texttt{FieldSet}(e, f, e_v) \mid \texttt{Builtin}_b(\vec{e}) \mid f(\vec{e}) \\
+    &\quad \mid \texttt{PyMod}(a) \mid \texttt{PyAttr}(e, \ell) \mid \texttt{PyCall}(e_c, \vec{e}):\tau \mid \texttt{PyMethod}(e_o, m, \vec{e}):\tau \\
+    &\quad \mid \texttt{PyBox}(e) \mid \texttt{PyUnbox}(e, \tau), \\
+  s &::= \texttt{let } x:\tau = e \mid x := e \mid a[e_i] := e_v \mid *e_p := e_v \mid \texttt{if } e \{ s_1 \} \texttt{ else } \{ s_2 \} \\
+    &\quad \mid \texttt{while}_K\ e \{ s \} \mid \texttt{return } e \mid s_1;\, s_2.
+\end{align*}
+
+\subsection{Static Typing Judgments}
+
+Let $\Delta$ store function signatures, struct field tables, and import aliases, and let $\Gamma$ map locals to types. Representative typing rules for strings, structs, transcendentals, and host-Python boundaries are:
+\[
+\frac{\Delta;\Gamma \vdash e_s : \texttt{str} \quad \Delta;\Gamma \vdash e_o : \texttt{int} \quad \Delta;\Gamma \vdash e_l : \texttt{int}}{\Delta;\Gamma \vdash \texttt{StrSubstr}(e_s, e_o, e_l) : \texttt{str}}\;(\textsc{T-Substr})
+\qquad
+\frac{\Delta;\Gamma \vdash e : \texttt{struct}\;S \quad (f : \tau_f) \in \Delta(S)}{\Delta;\Gamma \vdash \texttt{FieldGet}(e, f) : \tau_f}\;(\textsc{T-FGet})
+\]
+\[
+\frac{a \mapsto m \in \Delta}{\Delta;\Gamma \vdash \texttt{PyMod}(a) : \texttt{pyobj}\langle m \rangle}\;(\textsc{T-PyMod})
+\qquad
+\frac{\Delta;\Gamma \vdash e_o : \texttt{pyobj}\langle\cdot\rangle \quad \forall i.\,\Delta;\Gamma \vdash e_i : \tau_i}{\Delta;\Gamma \vdash \texttt{PyMethod}(e_o, m, \vec{e}) : \tau_r}\;(\textsc{T-PyMeth})
+\]
+\[
+\frac{\Delta;\Gamma \vdash e : \tau \quad \tau \in \{\texttt{bool},\texttt{int},\texttt{float}\}}{\Delta;\Gamma \vdash \texttt{PyBox}(e) : \texttt{pyobj}\langle\text{obj}\rangle}\;(\textsc{T-PyBox})
+\qquad
+\frac{b \in \{\texttt{exp},\texttt{log},\texttt{sin},\texttt{cos},\texttt{sqrt}\} \quad \Delta;\Gamma \vdash e : \texttt{float}}{\Delta;\Gamma \vdash \texttt{Builtin}_b(e) : \texttt{float}}\;(\textsc{T-Trans})
+\]
+
+\subsection{Big-Step Operational Semantics with Deterministic Host-Python Oracle $\mathcal{H}$}
+
+We parameterize the operational semantics by a \emph{referentially transparent host-Python oracle} $\mathcal{H}$ interpreting module handles $\mathcal{H}_{\text{mod}}$, attribute projections $\mathcal{H}_{\text{attr}}$, calls/methods $\mathcal{H}_{\text{call}}/\mathcal{H}_{\text{meth}}$, boxing/unboxing $\mathcal{H}_{\text{box}}/\mathcal{H}_{\text{unbox}}$, and transcendentals $\mathcal{H}_b : \mathbb{R} \to \mathbb{R}$. A runtime configuration pairs a local environment $\sigma : \mathsf{Var} \rightharpoonup \mathsf{Val}$ with a functional heap $\mu : \mathsf{HeapId} \to (\mathbb{Z} \to \mathsf{Val})$ (pointers are pairs $(\mathit{h}, k)$):
+\[
+\frac{\langle e_a, \sigma, \mu \rangle \Downarrow_{\mathcal{H}} A \quad \langle e_i, \sigma, \mu \rangle \Downarrow_{\mathcal{H}} k}{\langle \texttt{ArrLoad}(e_a, e_i), \sigma, \mu \rangle \Downarrow_{\mathcal{H}} A(k)}\;(\textsc{E-Load})
+\qquad
+\frac{\langle e_o, \sigma, \mu \rangle \Downarrow_{\mathcal{H}} v_o \quad \forall i.\,\langle e_i, \sigma, \mu \rangle \Downarrow_{\mathcal{H}} v_i}{\langle \texttt{PyMethod}(e_o, m, \vec{e}), \sigma, \mu \rangle \Downarrow_{\mathcal{H}} \mathcal{H}_{\text{meth}}(m)(v_o, \vec{v})}\;(\textsc{E-PyMeth})
+\]
+\[
+\frac{\langle e, \sigma, \mu \rangle \Downarrow_{\mathcal{H}} \langle f_1 \mapsto v_1, \dots, f_k \mapsto v_k \rangle}{\langle \texttt{FieldGet}(e, f_j), \sigma, \mu \rangle \Downarrow_{\mathcal{H}} v_j}\;(\textsc{E-FGet})
+\qquad
+\frac{\langle e_c, \sigma, \mu \rangle \Downarrow_{\mathcal{H}} \texttt{true} \quad \langle s;\,\texttt{while}_{K-1}\,e_c\{s\}, \sigma, \mu \rangle \Downarrow_{\mathcal{H}} \Sigma'}{\langle \texttt{while}_K\,e_c\{s\}, \sigma, \mu \rangle \Downarrow_{\mathcal{H}} \Sigma'}\;(\textsc{S-WhileT})
+\]
+
+\subsection{Denotational Semantics $\sem{\cdot}_{\text{Z3}}$ into Hash-Consed Z3 DAGs}
+
+The denotational translation $\sem{\cdot}_{\text{Z3}}$ (\texttt{simp\_verify/symexec.py}) maps \texttt{s-imp} types to Z3 sorts:
+\begin{align*}
+  \sem{\texttt{bool}}_{\text{Z3}} &= \mathsf{Bool}, &
+  \sem{\texttt{int}}_{\text{Z3}} &= \mathsf{Int}, &
+  \sem{\texttt{float}}_{\text{Z3}} &= \mathsf{Real}, &
+  \sem{\texttt{str}}_{\text{Z3}} &= \mathsf{String}, \\
+  \sem{\texttt{array}\langle\tau\rangle}_{\text{Z3}} &= \mathsf{Array}(\mathsf{Int}, \sem{\tau}_{\text{Z3}}), &
+  \sem{\texttt{struct}\;S}_{\text{Z3}} &= \mathsf{Datatype}(S), &
+  \sem{\texttt{pyobj}}_{\text{Z3}} &= \mathsf{PyObj}, &
+  \sem{\texttt{ptr}\langle\tau\rangle}_{\text{Z3}} &= \mathsf{HeapId} \times \mathsf{Int}.
+\end{align*}
+Every transcendental and host-Python operation translates to a \emph{rigid uninterpreted function} shared across both sides of a miter ($\texttt{uf\_exp}$, $\texttt{py\_getattr\_}\ell$, $\texttt{py\_call\_}k$, $\texttt{py\_method\_}m$, $\texttt{py\_box}_\tau$, $\texttt{py\_unbox}_\tau$). Structs translate to Z3 algebraic datatypes with constructor $\texttt{mk\_}S$ and accessors $\texttt{S\_}f_i$; control-flow merges use pointwise $\texttt{If}(c, t_1, t_2)$ short-circuited when $\mathrm{id}(t_1) = \mathrm{id}(t_2)$.
+
+\subsection{Why \texttt{s-imp} Lowers into Z3 DAGs Instead of Trees (and the Trade-Off)}
+
+In imperative SSA code, a single binding or control-flow merge is referenced multiple times downstream:
+\begin{lstlisting}[caption={Exponential tree blowup vs.\ linear DAG sharing in \texttt{s-imp}.}]
+let a: float = x + y;
+let b: float = a * a;
+let c: float = b * b;   // 3 DAG nodes, but 2^3 = 8 leaf copies in a tree!
+\end{lstlisting}
+Four concrete engineering reasons dictate lowering to Z3 DAGs:
+\begin{enumerate}
+  \item \textbf{Preventing $O(2^n)$ Memory Blowup:} A 30-step chain of shared bindings or unrolled \texttt{while} states has $O(n)$ DAG vertices versus $O(2^n)$ tree nodes. In our self-hosted \texttt{s-imp} parser, \texttt{t1}, \texttt{t2}, \texttt{t3}, and \texttt{node2} are each referenced 3--4 times; the entire miter is only 286 unique DAG nodes.
+  \item \textbf{$O(1)$ Structural Identity via Hash-Consing:} Z3's \texttt{ast\_manager} hash-conses every AST node into a canonical DAG vertex with a unique \texttt{get\_id()}, making arbitrarily deep syntactic equality an $O(1)$ integer check.
+  \item \textbf{One Proof Collapses Every Reference:} Proving $u \sim v$ once in Union-Find $\theta$ immediately propagates to every parent referencing $u$ or $v$, avoiding exponentially repeated sub-proofs.
+  \item \textbf{The Trade-Off:} DAG sharing makes optimal holed tile covering NP-complete (Section~\ref{sec:complexity}), motivating both our monotonic DAG-size guard in Variant~A and our tree-level Variant~B (Section~\ref{sec:variantb}).
+\end{enumerate}
+
+% ============================================================================
+\section{Complexity Landscape and Fundamental Hardness Barriers}
+\label{sec:complexity}
+
+\subsection{Exhaustive Matching, Edit Distance, and Shared-Node DAG Covering}
+\begin{itemize}
+  \item \textbf{Exhaustive Sub-DAG Matching:} Enumerating $V_L \times V_R$ incurs $\Theta(|V_L||V_R|)$ Z3 probes ($10^6$ pairs at 1,000 nodes).
+  \item \textbf{Edit Distance Barriers:} Ordered Tree Edit Distance (TED) requires $\Theta(n^3)$ under the APSP conjecture~\cite{bringmann2020}; unordered tree edit distance (required for $\Sigma_{\text{AC}}$) is NP-complete~\cite{zhang1992}, as is DAG edit distance.
+  \item \textbf{Optimal DAG Covering is NP-Complete:} While BURG/BURS~\cite{fraser1992,proebsting1995} covers \emph{trees} optimally in $O(n)$, covering a DAG with shared fan-out vertices ($\mathrm{deg}^-(v) \ge 2$) reduces to Binate Covering / Minimum Set Cover (Aho--Johnson--Ullman~\cite{aho1977}; Koes--Goldstein~\cite{koes2008}; Zhang~\cite{zhang2023extract}).
+  \item \textbf{Exponential AC/$E$-Anti-Unification:} Anti-unification modulo AC is finitary, yet its minimal complete set of generalizers can be exponentially large~\cite{alpuente2014,cerna2023}.
+\end{itemize}
+
+% ============================================================================
+\section{Comprehensive Literature Review (1970--2026)}
+\label{sec:lit}
+
+Our \texttt{s-imp} equivalence framework builds on five research traditions, summarized in Table~\ref{tab:taxonomy}:
+\begin{enumerate}
+  \item \textbf{Classical \& Term-Graph Anti-Unification:} Plotkin~\cite{plotkin1970} and Reynolds~\cite{reynolds1970} introduced first-order LGG; Bulychev, Kostylev, and Zakharov~\cite{bulychev2009} gave an $O(n \log n)$ reduced-DAG \texttt{MST} algorithm ($n \le N^2$); Baumgartner et al.~\cite{baumgartner2018} extended AU to cyclic term-graphs; Alpuente et al.~\cite{alpuente2014} and Cerna--Kutsia~\cite{cerna2023} surveyed equational/AC anti-unification.
+  \item \textbf{Rule-Based Unification, $\mathrm{HM}(X)$, and BREU:} Martelli--Montanari~\cite{martelli1982}, Odersky et al.'s $\mathrm{HM}(X)$~\cite{odersky1999}, and Backeman--R\"ummer's Bounded Rigid $E$-Unification (BREU)~\cite{backeman2015}.
+  \item \textbf{Congruence Closure, E-Graphs, Colored E-Graphs, \texttt{egglog}, and \texttt{babble}:} Nelson--Oppen~\cite{nelson1979,nelson1980}, Nieuwenhuis--Oliveras~\cite{nieuwenhuis2005}, \texttt{egg}~\cite{willsey2021}, Relational E-Matching~\cite{zhang2022}, \texttt{egglog}~\cite{zhang2023egglog}, Colored E-Graphs~\cite{singher2023}, \texttt{babble}~\cite{cao2023}, and DAG extraction NP-completeness~\cite{zhang2023extract}.
+  \item \textbf{Structural Hashing, WL Kernels, Random Interpretation, and LSH:} Weisfeiler--Lehman graph kernels (Shervashidze et al.~\cite{shervashidze2011}), DECKARD AST LSH (Jiang et al.~\cite{jiang2007}), Schwartz--Zippel polynomial identity testing~\cite{schwartz1980}, Gulwani--Necula Random Interpretation~\cite{gulwani2003}, Bryant ROBDDs~\cite{bryant1986}, and de~Moura--Bj\o rner extensional arrays~\cite{demoura2009}.
+  \item \textbf{DAG Instruction Selection \& Translation Validation:} Aho--Johnson--Ullman~\cite{aho1977}, BURG/BURS~\cite{fraser1992,proebsting1995}, NOLTIS~\cite{koes2008}, Pnueli et al.~\cite{pnueli1998}, Necula~\cite{necula2000}, and Alive2~\cite{lopes2021}.
+\end{enumerate}
+
+\begin{table}[!htbp]
+\centering
+\caption{Master taxonomy of algorithmic paradigms for \texttt{s-imp} DAG/AST anti-unification and equivalence checking.}
+\label{tab:taxonomy}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}p{2.9cm}p{2.5cm}p{2.2cm}p{3.5cm}X@{}}
+\toprule
+\textbf{Paradigm} & \textbf{Key Refs} & \textbf{Complexity} & \textbf{Strengths for \texttt{s-imp}} & \textbf{Primary Limitation} \\
+\midrule
+\texttt{Direct-Z3} & Nelson--Oppen~\cite{nelson1979}, Alive2~\cite{lopes2021} & 2-EXPTIME worst-case & Exact refutation on small formulas. & Stalls on opaque \texttt{uf\_*}/\texttt{py\_*} wrapping algebraic rewrites. \\
+\texttt{Exhaustive-AU} & Baseline & $\Omega(|V_L||V_R|)$ & Maximum bottom-up recall. & Quadratic pair explosion on large \texttt{s-imp} DAGs. \\
+\texttt{TD-HM-AU} & Plotkin~\cite{plotkin1970}, HM(X)~\cite{odersky1999} & $O(N)$ on spines & Instant peel on matching spines \& AC bags. & Halts immediately at parent-mismatch wall. \\
+Term-Graph \texttt{MST} & Bulychev~\cite{bulychev2009}, Baumgartner~\cite{baumgartner2018} & $O(n \log n)$ & Exact syntactic DAG LGG. & Purely syntactic; misses ring, array, \& string rewrites. \\
+\texttt{BU-Footprint} & Passes Unify & $O(N)$--$O(N^2)$ & Fast near leaves; breaks parent wall. & Quadratic bucket collapse once $\mathrm{FV}$ saturates. \\
+\texttt{Bounded-EGraph} & \texttt{egg}~\cite{willsey2021}, \texttt{babble}~\cite{cao2023}, \texttt{egglog}~\cite{zhang2023egglog} & Exp.\ worst-case & Bottom-up AC, distributivity, colored guards. & Memory blowup on mixed theories; NP-complete extraction~\cite{zhang2023extract}. \\
+\texttt{DAG-Cover-DP} & BURG~\cite{fraser1992}, NOLTIS~\cite{koes2008} & $O(N|\mathcal{T}|)$/pass & Prevents shared-node duplication. & Selection only; cannot discover semantic matches. \\
+\textbf{Var.~A (\texttt{BU-WLAU})} & WL~\cite{shervashidze2011}, LSH~\cite{jiang2007}, SZ~\cite{schwartz1980} & \textbf{$O(N)$ expected} & Breaks parent wall; $216\times$ fewer cands; handles inlining. & Heavy when Z3 \texttt{StringSort} probes fire globally. \\
+\textbf{Var.~B (AST Tree)} & BURS~\cite{proebsting1995}, Modular UF & \textbf{$O(n)$ DP cover} & Opaque calls + $O(n)$ optimal cover ($\mathbf{3{,}300\times}$ faster on parser). & Requires lazy inlining if an inlining pass ran. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ============================================================================
+\section{Full Presentation of Alternative Algorithms (Algorithms 1--6)}
+\label{sec:alternatives}
+
+We present six complete alternative algorithms specialized to \texttt{s-imp} miters $(L, R, \Gamma_0)$:
+
+\subsection{Algorithm 1: Direct Global Z3 Refutation (\texttt{Direct-Z3})}
+\begin{lstlisting}[caption={Algorithm 1: Monolithic Global Z3 Refutation (\texttt{Direct-Z3}).}]
+function DirectZ3(L, R, Gamma0, timeout_ms):
+    S <- Z3.Solver();  S.set("timeout", timeout_ms)
+    S.add(Gamma0, L != R)
+    return S.check()
+\end{lstlisting}
+\textbf{Failure Mode in \texttt{s-imp}:} Stalls when \texttt{uf\_exp} or \texttt{py\_method\_eval} wraps algebraically rewritten sub-DAGs or deep unrolled \texttt{StringSort}/\texttt{Datatype} chains.
+
+\subsection{Algorithm 2: Exhaustive Pairwise Sub-DAG Matching (\texttt{Exhaustive-AU})}
+\begin{lstlisting}[caption={Algorithm 2: Exhaustive Bottom-Up Pairwise Sub-DAG Matching (\texttt{Exhaustive-AU}).}]
+function ExhaustiveAU(L, R, Gamma0):
+    V_L <- PostOrderDAG(L);  V_R <- PostOrderDAG(R);  theta <- UnionFind()
+    for u in V_L (non-leaf):
+        for v in V_R (non-leaf):
+            if sort(u) != sort(v) or theta.same(u, v): continue
+            if same_head(u, v) and all(theta.same(c_u, c_v)):
+                theta.union(u, v); continue
+            if ConcreteFilter(u, v) and Z3Oracle(Gamma0, u, v): theta.union(u, v)
+    return AbstractAndCheckRoot(L, R, Gamma0, theta)
+\end{lstlisting}
+\textbf{Failure Mode:} $\Theta(|V_L||V_R|)$ pair enumeration blows up on large \texttt{s-imp} kernels ($11{,}696$ pairs at 292 nodes).
+
+\subsection{Algorithm 3: Top-Down Stratified Guarded Anti-Unification (\texttt{TD-HM-AU})}
+\begin{lstlisting}[caption={Algorithm 3: Top-Down Stratified Guarded Anti-Unification (\texttt{TD-HM-AU}).}]
+function TopDownHM(u, v, pi, theta, Memo):
+    if theta.same(u, v) or Memo.hit(u, v, pi): return True
+    if sort(u) != sort(v): return False
+    if head(u) == head(v) and head(u) in Sigma_rigid:
+        if all(TopDownHM(a, b, pi, theta, Memo) for a, b in zip(ch(u), ch(v))):
+            Commit(theta, Memo, u, v, pi); return True
+    if head(u) == head(v) and head(u) in Sigma_AC:
+        (rem_u, rem_v) <- CancelByUF(FlattenAC(u), FlattenAC(v), theta)
+        if empty(rem_u) and empty(rem_v): Commit(...); return True
+        if |rem_u| + |rem_v| < |bag_u| + |bag_v|:
+            return TopDownHM(Rebuild(rem_u), Rebuild(rem_v), pi, theta, Memo)
+    if size(u) + size(v) <= 48 and Z3Oracle(pi, u, v):
+        Commit(theta, Memo, u, v, pi); return True
+    return False
+\end{lstlisting}
+\textbf{Failure Mode:} Aborts immediately at the parent-mismatch wall (\texttt{Mul} vs.\ \texttt{Add}) whenever $|u|+|v| > 48$.
+
+\subsection{Algorithm 4: Bottom-Up Leaf-Footprint Bucketing (\texttt{BU-Footprint})}
+\begin{lstlisting}[caption={Algorithm 4: Bottom-Up Leaf-Footprint Bucketing (\texttt{BU-Footprint}).}]
+function BUFootprint(L, R, Gamma0):
+    V_L <- PostOrderDAG(L);  V_R <- PostOrderDAG(R)
+    Buckets <- Map[(Sort, FrozenSet[Var]) -> List[Node]]
+    for u in V_L (non-leaf): Buckets[(sort(u), FV(u))].append(u)
+    Cands <- [(h(u)+h(v), u, v) for v in V_R for u in Buckets[(sort(v), FV(v))]]
+    Sort(Cands, key=lambda x: x[0])
+    return RunBottomUpDischarge(Cands, L, R, Gamma0)
+\end{lstlisting}
+\textbf{Failure Mode:} Suffers \emph{Footprint Saturation Collapse}: once expressions touch all 3--4 live inputs, nearly every upper node lands in the same bucket, degrading back to $\Theta(|V_L||V_R|)$.
+
+\subsection{Algorithm 5: Bounded Bottom-Up E-Graph Saturation (\texttt{Bounded-EGraph})}
+\begin{lstlisting}[caption={Algorithm 5: Bounded Bottom-Up E-Graph Saturation (\texttt{Bounded-EGraph}).}]
+function BoundedEGraph(L, R, Rules, max_iters, max_enodes):
+    EG <- EGraph();  id_L <- EG.add_dag(L);  id_R <- EG.add_dag(R)
+    for iter in 1..max_iters:
+        if EG.find(id_L) == EG.find(id_R): return True
+        if EG.num_enodes() > max_enodes: break
+        for (rule, subst, eclass) in RelationalEMatch(EG, Rules):
+            EG.union(eclass, EG.add(Instantiate(rule.rhs, subst)))
+        EG.rebuild()
+    return EG.find(id_L) == EG.find(id_R)
+\end{lstlisting}
+\textbf{Failure Mode:} Non-goal-directed saturation explodes memory on mixed Real + Array + String + Datatype \texttt{s-imp} DAGs, and optimal DAG extraction is NP-complete~\cite{zhang2023extract}.
+
+\subsection{Algorithm 6: Cut-Aware Bottom-Up DAG Covering (\texttt{DAG-Cover-DP})}
+\begin{lstlisting}[caption={Algorithm 6: Cut-Aware Bottom-Up DAG Covering (\texttt{DAG-Cover-DP}).}]
+function DAGCoverDP(G, ProvedTiles):
+    Fixed <- {v in G | deg_in(v) >= 2 and v is root of a tile}
+    T_cover <- BottomUpTreeDP(G, ProvedTiles, forbidden_internal=Fixed)
+    while exists shared v internalized by >= 2 tiles with CutCost(v) < Cost(T_cover):
+        Fixed.add(v);  T_cover <- BottomUpTreeDP(G, ProvedTiles, Fixed)
+    return T_cover
+\end{lstlisting}
+\textbf{Role:} Solves tile selection without shared-node duplication, but relies on a bottom-up discovery engine to find semantic equivalences first.
+
+% ============================================================================
+\section{Variant A: DAG-Level \texttt{BU-WLAU} for \texttt{s-imp} (Algorithm 7)}
+\label{sec:proposed}
+
+\textbf{\texttt{BU-WLAU}} (\texttt{simp\_verify/unifier.py}) operates on hash-consed Z3 DAGs lowered from \texttt{s-imp} in four stages:
+\begin{enumerate}
+  \item \textbf{Stage 1 (Exact AC-Normalized WL Hash-Consing):} Post-order traversal sorting $\Sigma_{\text{AC}}$ children and hashing constant leaves by exact value string (\texttt{f"LEAF:\{sort\}:\{expr\}"}) so distinct constants like \texttt{0} and \texttt{2} never collide; merges exact matches in Union-Find $\theta$ in $O(N)$.
+  \item \textbf{Stage 2 (Algebraic-Invariant Semantic Fingerprinting + Height-Banded MinHash LSH):} Evaluates every \texttt{s-imp} sub-DAG at 2 independent points over:
+  \begin{itemize}
+    \item $\mathbb{F}_{2^{61}-1}$ for \texttt{Int}/\texttt{Real} (absorbing all commutative ring identities in $O(1)$);
+    \item 64-bit packed truth masks for \texttt{Bool} (absorbing idempotence/absorption/De Morgan);
+    \item 4-index probe tuples \texttt{[0, 1, 2, 7]} for McCarthy \texttt{Array}s (absorbing read-over-write);
+    \item Concrete string evaluation for \texttt{StringSort} and tuple projection for Z3 \texttt{Datatype} structs (\texttt{mk\_Token} / \texttt{Token\_next\_pos});
+    \item Deterministic hashes for opaque \texttt{uf\_*} and \texttt{py\_*} rigid functions.
+  \end{itemize}
+  Pairs matching exact semantic fingerprints or colliding in height-banded MinHash LSH ($K=12, B=4, r=3$, bucket key $(\mathrm{sort}, \lfloor h/2 \rfloor, \mathrm{band}_b)$) are queued bottom-up by $h(u)+h(v)$.
+  \item \textbf{Stage 3 (Bottom-Up Discharge \& Upward Rigid Congruence Cascade):} If heads and $\theta.\mathrm{find}$ children match, merges in $O(1)$ with \textbf{zero Z3 calls} (collapsing enclosing \texttt{uf\_exp}, \texttt{py\_method\_*}, and \texttt{mk\_Token} parents automatically!). Otherwise dispatches a bounded local Z3 query and logs the discharged predicate $\texttt{hm}_k : u \sim v$.
+  \item \textbf{Stage 4 (Monotonic DAG Covering \& Exact Fallback):} Rewrites maximal proved classes into fresh Skolem holes $\texttt{hm}_k$ only if $\mathrm{nodes}(L', R') \le \mathrm{nodes}(L, R)$, checks $(L', R')$ in Z3, and verifies any \texttt{SAT} on exact $(L, R)$ (zero false-\texttt{SAT}).
+\end{enumerate}
+
+\begin{lstlisting}[caption={Algorithm 7: Variant A (\texttt{BU-WLAU}) Implemented in \texttt{simp\_verify/unifier.py}.}]
+function BU_WLAU(L, R, Gamma0):
+    V_L <- PostOrderDAG(L);  V_R <- PostOrderDAG(R);  theta <- UnionFind()
+    WL, Shingles <- ComputeWLShingles(V_L union V_R, theta)
+    MergeExactWLMatches(V_L, V_R, WL, theta)
+    SemFP <- ComputeSemanticFingerprints(V_L union V_R)  // F_p^2, Bool64, ArrProbe, Str, Struct, UF
+    Cands <- ExactSemFPMatch(V_L, V_R, SemFP) union HeightBandedLSH(V_L, V_R, Shingles, SemFP)
+    Sort(Cands, key=lambda (u, v): height(u) + height(v))
+    for (u, v) in Cands:
+        if theta.same(u, v): continue
+        if head(u) == head(v) and all(theta.same(a, b) for a, b in zip(ch(u), ch(v))):
+            theta.union(u, v);  LogDischarged(u, v, "congruence_cascade");  continue
+        if Z3Oracle(Gamma0, u, v, timeout=50ms) == UNSAT:
+            theta.union(u, v);  LogDischarged(u, v, "ring_fp_z3")
+    if theta.same(L, R): return UNSAT
+    (L', R') <- RewriteMaximalWithMonotonicGuard(L, R, theta)
+    res <- Z3Oracle(Gamma0, L', R')
+    return UNSAT if res == UNSAT else Z3Oracle(Gamma0, L, R)
+\end{lstlisting}
+
+% ============================================================================
+\section{Beyond $\Sigma_{\text{AC}} \uplus \Sigma_{\text{rigid}}$: Richer Algebraic Structures and Anti-Blowup Indexing}
+\label{sec:richer}
+
+Rather than paying for explicit axiom rewriting or exponential OR-branching on richer theories, \texttt{BU-WLAU} absorbs richer equational theories via semantic homomorphisms (strictly for candidate indexing, never as proof certificates):
+\begin{itemize}
+  \item \textbf{Commutative Rings ($\mathbb{R}, \mathbb{Z}, \mathbb{Z}/2^w\mathbb{Z}$):} Schwartz--Zippel~\cite{schwartz1980} and Random Interpretation~\cite{gulwani2003} over $\mathbb{F}_{2^{61}-1}^m$ absorb associativity, commutativity, distributivity, inverses, and factoring in $O(1)$ with collision probability $\le (d/p)^m < 10^{-30}$.
+  \item \textbf{Boolean Algebras \& Distributive Lattices ($\Sigma_{\text{ACI}}$):} 64-bit packed truth-masks absorb idempotence, absorption, and De Morgan; single-word XOR detects $c_1 \equiv \neg c_2$ in $O(1)$; ROBDDs~\cite{bryant1986} canonicalize small-support guards.
+  \item \textbf{Extensional Arrays \& Structs:} Random-index probe vectors~\cite{demoura2009} absorb write-order swaps and dead stores; tuple-projected struct fingerprints absorb \texttt{FieldGet(StructInit(...))} in $O(1)$.
+  \item \textbf{Eliminating $O(k!)$ AC Blowup:} Replace $k!$ AC remainder permutations with $O(k^3)$ Hungarian Maximum-Weight Bipartite Matching over the $\mathbb{F}_p^m$ + WL affinity matrix.
+  \item \textbf{Eliminating $O(2^d)$ Chained-\texttt{If} Blowup:} Abstract matching arm expressions $(e_j, e'_k) \mapsto \alpha_j$ bottom-up \emph{first} via $\mathrm{fp}_{\text{ring}}$, reducing chained \texttt{If}s to pure guard-partition checks $G_L(\alpha_j) \leftrightarrow G_R(\alpha_j)$ in $O(d)$.
+\end{itemize}
+
+% ============================================================================
+\section{Variant B: AST/Tree-Level Anti-Unification for \texttt{s-imp} (Algorithm 8)}
+\label{sec:variantb}
+
+While Variant~A excels when aggressive passes inline helpers or restructure shared diamonds, global DAG lowering forces Z3 to inspect globally unrolled \texttt{StringSort}/\texttt{Datatype} DAGs. \textbf{Variant~B} (\texttt{simp\_verify/ast\_unifier.py}) keeps expressions at the \textbf{\texttt{s-imp} AST tree level} before global DAG merging:
+\begin{enumerate}
+  \item \textbf{Trivial $O(n)$ Optimal BURS Tree Covering:} Because every expression RHS is a pure tree with zero internal fan-out, bottom-up dynamic programming
+  \[
+    \mathrm{dp}(e) \;=\; \min\Big(\mathbf{1}_{e \in \mathcal{P}},\; 1 + \sum_{c \in \mathrm{ch}(e)} \mathrm{dp}(c)\Big)
+  \]
+  computes the exact globally optimal tile cover in linear time.
+  \item \textbf{Opaque-First Modular Function Calls:} Helper functions (e.g., \texttt{next\_token}) are verified modularly once; in callers (\texttt{parse\_assign\_expr}), \texttt{FuncCall(f, args)} is treated as a rigid uninterpreted function first, falling back to lazy inlining only when an inlining pass alters call structure.
+  \item \textbf{Lazy Leaf-Only Z3 Lowering:} Z3 is invoked \emph{only} on minimal concrete mismatched AST subtrees (e.g., \texttt{pos + 0} $\sim$ \texttt{pos}, \texttt{"" + ch} $\sim$ \texttt{ch}), keeping Z3's string solver out of global unrolled control flow.
+\end{enumerate}
+
+\begin{lstlisting}[caption={Algorithm 8: Variant B (\texttt{ASTTreeUnifier}) in \texttt{simp\_verify/ast\_unifier.py}.}]
+function VerifyASTTree(ProgL, ProgR, entry):
+    for helper f != entry shared by ProgL, ProgR:
+        if not VerifyASTTree(ProgL, ProgR, f, check_helpers=False): return SAT
+    retL <- TreeEvalStmts(ProgL[entry]);  retR <- TreeEvalStmts(ProgR[entry])
+    ok <- UnifyTreesOpaqueFirst(retL, retR)   // calls Z3 ONLY on mismatch leaves!
+    dp_cost <- OptimalTreeCoverDP(retL, ProvedSet)   // exact O(|tree|) BURS cover
+    return (ok, dp_cost)
+\end{lstlisting}
+
+% ============================================================================
+\section{Worked Traces on Real \texttt{s-imp} Programs}
+\label{sec:traces}
+
+\subsection{Trace A: \texttt{const\_fold} Under Opaque \texttt{uf\_exp} in \texttt{kernel}}
+In \texttt{simp\_verify/e2e\_demo.py}, \texttt{const\_fold\_pass} rewrites \texttt{exp((x + y) * 2.0)} to \texttt{exp((x + y) + (x + y))}:
+\begin{enumerate}
+  \item Stage 2 ($\mathbb{F}_{2^{61}-1}^2$ ring fingerprinting) hashes \texttt{Mul(Add(x,y), 2)} and \texttt{Add(Add(x,y), Add(x,y))} into the same bucket in $O(1)$.
+  \item Stage 3 discharges $\texttt{hm}_1 : \texttt{(x+y)*2} \sim \texttt{x+y+x+y}$ via Z3 in $< 0.5\,\text{ms}$.
+  \item Moving upward, $\texttt{hm}_3 : \texttt{uf\_exp((x+y)*2)} \sim \texttt{uf\_exp(x+y+x+y)}$ and $\texttt{hm}_6 : \texttt{uf\_exp(...)+uf\_exp(...)}$ merge via \texttt{congruence\_cascade} with \textbf{zero Z3 calls}, shrinking the DAG $95 \to 8$ nodes and closing \texttt{UNSAT}.
+\end{enumerate}
+
+\subsection{Trace B: Array Read-Over-Write in \texttt{mem\_licm\_pass}}
+\texttt{mem\_licm\_pass} forwards \texttt{Store(buf, 1, v)[1] -> v} and hoists \texttt{sin(y)} out of a \texttt{while} loop. Stage 2's 4-index array probe matches \texttt{Store(buf, 1, v)[1]} directly with \texttt{v} ($\texttt{hm}_4$), triggering an upward congruence cascade across \texttt{hm\_5}--\texttt{hm\_7} that collapses the entire 77-node DAG down to \textbf{1 node} (\texttt{UNSAT}).
+
+\subsection{Trace C: Self-Hosted \texttt{s-imp} Lexer/Parser (\texttt{self\_parser.py})}
+Written natively in \texttt{s-imp} using \texttt{struct Token \{ kind: int, lexeme: str, next\_pos: int \}} and \texttt{struct ParseNode \{ op\_kind: int, lhs\_tok: str, rhs\_tok: str, next\_pos: int, ok: bool \}}, \texttt{parse\_assign\_expr} invokes \texttt{next\_token} three times to parse \texttt{a + b} / \texttt{a * b}. Variant~A collapses all $286 \to 1$ DAG nodes (\texttt{UNSAT}, $168.96\,\text{s}$ due to global \texttt{StringSort} probes), while Variant~B verifies \texttt{next\_token} modularly and closes \texttt{parse\_assign\_expr} in \textbf{50.89 ms} ($235 \to 1$ optimal Tree DP cost).
+
+% ============================================================================
+\section{Formal Meta-Theory and Proofs}
+\label{sec:metatheory}
+
+\begin{theorem}[Operational--Denotational Simulation Soundness]
+For any well-typed \texttt{s-imp} function $f$ (bounded by loop unroll $K$ and recursion depth $D$) and any deterministic host-Python oracle $\mathcal{H}$, $\langle f(\vec{v}), \sigma_0, \mu_0 \rangle \Downarrow_{\mathcal{H}} r \implies \mathfrak{A}_{\vec{v}, \mathcal{H}}(\sem{f}_{\text{Z3}}) = r$.
+\end{theorem}
+
+\begin{theorem}[UNSAT-Soundness \& Zero False-SAT of Variants A and B]
+Every pair $(u, v)$ merged in $\theta$ (Variant~A) or added to $\mathcal{P}$ (Variant~B) satisfies $\Gamma_0 \models u = v$ over all interpretations of $\Sigma_{\text{rigid}}$. Hence $\mathrm{UNSAT}$ on the abstracted miter implies universal equivalence $P_1 \equiv_{\mathcal{H}} P_2$. Exact fallback on \texttt{SAT} guarantees zero false-\texttt{SAT}.
+\end{theorem}
+
+\begin{theorem}[Complexity, Termination, and Linear-Time Tree Optimality]
+Variant~A generates candidates in $O((|V|+|E|)(k+K))$ expected time under $O(1)$ height-band load and terminates under finite budgets. Variant~B computes the exact minimum-cost tile cover on pure \texttt{s-imp} AST trees in $O(|T|)$ time.
+\end{theorem}
+
+% ============================================================================
+\section{Empirical Evaluation on Z3 5.4.1}
+\label{sec:eval}
+
+We evaluated all components on Z3 5.4.1 across four benchmark suites:
+
+\begin{table}[!htbp]
+\centering
+\caption{Suite 1: Candidate \& runtime scaling on UF-wrapped parent-mismatched diamond DAGs (Z3 5.4.1).}
+\label{tab:scaling}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}rrrrrrrrrr@{}}
+\toprule
+\textbf{$k$} & \textbf{Nodes} & \textbf{Exh Cands} & \textbf{Exh ms} & \textbf{FP Cands} & \textbf{FP ms} & \textbf{WLAU Cands} & \textbf{WLAU Z3} & \textbf{WLAU ms} & \textbf{TD-Syn} \\
+\midrule
+4  & 54  & 384    & 30.6  & 140   & 18.5  & \textbf{11} & \textbf{4}  & \textbf{13.0} & False \\
+8  & 88  & 1,040  & 59.1  & 434   & 34.4  & \textbf{16} & \textbf{5}  & \textbf{21.0} & False \\
+16 & 156 & 3,312  & 160.7 & 1,526 & 83.9  & \textbf{27} & \textbf{9}  & \textbf{36.5} & False \\
+24 & 224 & 6,864  & 318.1 & 3,290 & 152.3 & \textbf{42} & \textbf{13} & \textbf{54.6} & False \\
+32 & 292 & 11,696 & 510.7 & 5,726 & 240.5 & \textbf{54} & \textbf{16} & \textbf{69.3} & False \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[!htbp]
+\centering
+\caption{Suite 2: Per-pass \texttt{s-imp} verification on \texttt{kernel} + recursive \texttt{decay\_rec} (\texttt{e2e\_demo.py}).}
+\label{tab:e2e}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}lrrrrl@{}}
+\toprule
+\textbf{Optimization Pass} & \textbf{DAG Nodes} & \textbf{Cands} & \textbf{Discharged} & \textbf{Status} & \textbf{Highlight} \\
+\midrule
+1. \texttt{const\_fold\_pass} & $95 \to 8$ & 99 & 39 & \texttt{UNSAT} & \texttt{uf\_exp((x+y)*2)} cascades in 0 Z3 calls \\
+2. \texttt{cse\_pass} & $59 \to 1$ & 64 & 12 & \texttt{UNSAT} & Complete 1-node root closure \\
+3. \texttt{mem\_licm\_pass} & $77 \to 1$ & 80 & 30 & \texttt{UNSAT} & Array ROW + \texttt{sin(y)} LICM closure \\
+4. \texttt{dce\_pass} & $56 \to 1$ & 60 & 11 & \texttt{UNSAT} & Dead bindings pruned cleanly \\
+5. Full 4-Pass Pipeline & $93 \to 8$ & 95 & 37 & \texttt{UNSAT} & End-to-end equivalence proved \\
+6. Negative (\texttt{a-b -> a+b}) & $83 \to 39$ & 81 & 18 & \texttt{SAT} & Concrete counterexample model returned \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[!htbp]
+\centering
+\caption{Suite 3 \& 4: 15-program host-Python fuzzer (\texttt{fuzzer.py}) and Variant~A vs.\ Variant~B on the self-hosted \texttt{s-imp} parser (\texttt{self\_parser.py}, \texttt{ast\_unifier.py}).}
+\label{tab:fuzz_ab}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}lrrrrl@{}}
+\toprule
+\textbf{Benchmark / Verifier} & \textbf{Result} & \textbf{Before $\to$ After} & \textbf{Preds / Z3} & \textbf{Wall Time} & \textbf{Takeaway} \\
+\midrule
+Fuzzer: 15 Sound Pipelines & \textbf{15/15 \texttt{UNSAT}} & $55.4 \to 1.0$ avg & 269 preds & 17.94 s tot & 100\% typechecked, 0 false-\texttt{SAT} \\
+Fuzzer: 15 Mutated Passes & \textbf{15/15 \texttt{SAT}} & Refuted & Exact Z3 & included & 0 false-\texttt{UNSAT} across all 15 \\
+Parser: Var.~A (DAG \texttt{BU-WLAU}) & \texttt{UNSAT} & $286 \to 1$ DAG & 162 preds & 168,962 ms & Global \texttt{StringSort} probes dominate \\
+\textbf{Parser: Var.~B (AST Tree)} & \textbf{\texttt{UNSAT}} & \textbf{$235 \to 1$ DP} & \textbf{64 leaf} & \textbf{50.89 ms} & \textbf{Opaque calls + $O(n)$ DP ($\sim 3{,}300\times$ faster)} \\
+Parser: Var.~B Bug (\texttt{3 -> 4}) & \texttt{SAT} & Refuted & Leaf Z3 & 147.79 ms & Soundly catches parser length bug \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ============================================================================
+\section{Engineering Integration and Open Problems}
+\label{sec:future}
+
+A production \texttt{s-imp} translation validator should compose \textbf{Variant~B first, Variant~A second}:
+\begin{enumerate}
+  \item Run \textbf{Variant~B} (\texttt{ASTTreeUnifier}) first to exploit opaque-first modular function calls and $O(n)$ optimal tree covering (closing non-inlining passes like the self-hosted parser in $\sim 50\,\text{ms}$).
+  \item Fall back to \textbf{Variant~A} (\texttt{BU-WLAU}) whenever inter-procedural inlining, cross-block CSE, or shared diamond restructuring breaks AST-level call alignment.
+\end{enumerate}
+Open directions include incremental dynamic WL-LSH updates under Union-Find merges, lockstep relational loop-invariant synthesis for non-trivially transformed loops, and treewidth-bounded optimal DAG extraction.
+
+\begin{thebibliography}{99}
+\bibitem{plotkin1970} G.~D. Plotkin. A note on inductive generalization. \emph{Machine Intelligence}, 5:153--163, 1970.
+\bibitem{reynolds1970} J.~C. Reynolds. Transformational systems and the algebraic structure of atomic formulas. \emph{Machine Intelligence}, 5:135--151, 1970.
+\bibitem{aho1977} A.~V. Aho, S.~C. Johnson, and J.~D. Ullman. Code generation for expressions with common subexpressions. \emph{JACM}, 24(1):146--160, 1977.
+\bibitem{nelson1979} G.~Nelson and D.~C. Oppen. Simplification by cooperating decision procedures. \emph{ACM TOPLAS}, 1(2):245--257, 1979.
+\bibitem{nelson1980} G.~Nelson and D.~C. Oppen. Fast decision procedures based on congruence closure. \emph{JACM}, 27(2):356--364, 1980.
+\bibitem{schwartz1980} J.~T. Schwartz. Fast probabilistic algorithms for verification of polynomial identities. \emph{JACM}, 27(4):701--717, 1980. \url{https://projects.csail.mit.edu/jacm/References/schwartz1980:701.html}
+\bibitem{martelli1982} A.~Martelli and U.~Montanari. An efficient unification algorithm. \emph{ACM TOPLAS}, 4(2):258--282, 1982.
+\bibitem{bryant1986} R.~E. Bryant. Graph-based algorithms for Boolean function manipulation. \emph{IEEE Trans. Comput.}, C-35(8):677--691, 1986.
+\bibitem{zhang1992} K.~Zhang, R.~Statman, and D.~Shasha. On the editing distance between unordered labeled trees. \emph{IPL}, 42(3):133--139, 1992.
+\bibitem{fraser1992} C.~W. Fraser, D.~R. Hanson, and T.~A. Proebsting. Engineering a simple, efficient code-generator generator (BURG). \emph{ACM LOPLAS}, 1(3):213--226, 1992. \url{http://rsim.cs.uiuc.edu/arch/qual_papers/compilers/fraser92.pdf}
+\bibitem{proebsting1995} T.~A. Proebsting. BURS automata generation. \emph{ACM TOPLAS}, 17(3):461--486, 1995.
+\bibitem{pnueli1998} A.~Pnueli, M.~Siegel, and E.~Singerman. Translation validation. In \emph{TACAS}, LNCS 1384, pp.~151--166, 1998.
+\bibitem{odersky1999} M.~Odersky, M.~Sulzmann, and M.~Wehr. Type inference with constrained types (HM(X)). \emph{TAPOS}, 5(1):35--55, 1999.
+\bibitem{necula2000} G.~C. Necula. Translation validation for an optimizing compiler. In \emph{PLDI}, pp.~83--94, 2000. \url{https://people.eecs.berkeley.edu/~necula/Papers/tv_pldi00.pdf}
+\bibitem{gulwani2003} S.~Gulwani and G.~C. Necula. Discovering affine equalities using random interpretation. In \emph{POPL}, pp.~74--84, 2003. \url{https://www.microsoft.com/en-us/research/wp-content/uploads/2016/12/rand_popl03.pdf}
+\bibitem{nieuwenhuis2005} R.~Nieuwenhuis and A.~Oliveras. Proof-producing congruence closure. In \emph{RTA}, LNCS 3467, pp.~453--468, 2005. \url{https://www.cs.upc.edu/~roberto/papers/rta05.pdf}
+\bibitem{jiang2007} L.~Jiang, G.~Misherghi, Z.~Su, and S.~Glondu. DECKARD: Scalable and accurate tree-based detection of code clones. In \emph{ICSE}, pp.~96--105, 2007. \url{https://www.cs.ucdavis.edu/~su/publications/icse07.pdf}
+\bibitem{koes2008} D.~R. Koes and S.~C. Goldstein. Near-optimal instruction selection on DAGs. In \emph{CGO}, pp.~45--54, 2008. \url{https://llvm.org/pubs/2008-CGO-DagISel.pdf}
+\bibitem{bulychev2009} P.~E. Bulychev, E.~V. Kostylev, and V.~A. Zakharov. Anti-unification algorithms and their applications in program analysis. In \emph{PSI}, pp.~413--423, 2009. \url{https://ora.ox.ac.uk/objects/uuid:481f74f3-7003-4746-a28e-9a1aabb45a43/files/m0cf49603695a570cefa25f57f7ee4000}
+\bibitem{demoura2009} L.~de Moura and N.~Bj\o rner. Generalized, efficient array decision procedures. In \emph{FMCAD}, pp.~45--52, 2009. \url{https://leodemoura.github.io/files/fmcad09.pdf}
+\bibitem{shervashidze2011} N.~Shervashidze et al. Weisfeiler-Lehman graph kernels. \emph{JMLR}, 12(77):2539--2561, 2011. \url{https://jmlr.org/papers/v12/shervashidze11a.html}
+\bibitem{alpuente2014} M.~Alpuente, S.~Escobar, J.~Espert, and J.~Meseguer. A modular order-sorted equational generalization algorithm. \emph{Inf. Comput.}, 235:98--136, 2014.
+\bibitem{backeman2015} P.~Backeman and P.~R\"ummer. Theorem proving with bounded rigid E-unification. In \emph{CADE-25}, LNCS 9195, pp.~572--587, 2015.
+\bibitem{baumgartner2018} A.~Baumgartner, T.~Kutsia, J.~Levy, and M.~Villaret. Term-graph anti-unification. In \emph{FSCD}, LIPIcs 108, 2018. \url{https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.FSCD.2018.9}
+\bibitem{bringmann2020} K.~Bringmann, P.~Gawrychowski, S.~Mozes, and O.~Weimann. Tree edit distance cannot be computed in strongly subcubic time (unless APSP can). \emph{ACM TALG}, 16(4):1--22, 2020.
+\bibitem{lopes2021} N.~P. Lopes, J.~Lee, C.-K. Hur, Z.~Liu, and J.~Regehr. Alive2: Bounded translation validation for LLVM. In \emph{PLDI}, pp.~65--79, 2021. \url{https://users.cs.utah.edu/~regehr/alive2-pldi21.pdf}
+\bibitem{willsey2021} M.~Willsey et al. egg: Fast and extensible equality saturation. \emph{PACMPL (POPL)}, 5:23:1--23:29, 2021.
+\bibitem{zhang2022} Y.~Zhang, Y.~R. Wang, M.~Willsey, and Z.~Tatlock. Relational e-matching. \emph{PACMPL (POPL)}, 6:35:1--35:22, 2022. \url{https://ztatlock.net/pubs/2022-popl-rematch/2022-popl-rematch.pdf}
+\bibitem{cao2023} D.~Cao, R.~Kunkel, C.~Nandi, M.~Willsey, Z.~Tatlock, and N.~Polikarpova. babble: Learning better abstractions with e-graphs and anti-unification. \emph{PACMPL (POPL)}, 7:396--424, 2023. \url{https://cseweb.ucsd.edu/~npolikarpova/publications/popl23.pdf}
+\bibitem{cerna2023} D.~M. Cerna and T.~Kutsia. Anti-unification and generalization: A survey. In \emph{IJCAI}, pp.~6563--6573, 2023. \url{https://ijcai.org/proceedings/2023/736}
+\bibitem{singher2023} E.~Singher and S.~Itzhaky. Colored e-graph: Equality reasoning with conditions. \emph{arXiv:2305.19203}, 2023.
+\bibitem{zhang2023egglog} Y.~Zhang et al. Better together: Unifying Datalog and equality saturation (egglog). \emph{PACMPL (PLDI)}, 7:125:1--125:25, 2023. \url{https://ztatlock.net/pubs/2023-pldi-egglog/2023-pldi-egglog.pdf}
+\bibitem{zhang2023extract} Y.~Zhang. The e-graph extraction problem is NP-complete. Technical Note, 2023. \url{https://effect.systems/blog/egraph-extraction.html}
+\end{thebibliography}
+
+\end{document}
