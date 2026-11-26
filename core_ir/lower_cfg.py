@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 
-from .core_types import BOOL, CoreType, TTuple
 from .ir import (
     ConstVal,
     CoreFunc,
@@ -11,6 +10,7 @@ from .ir import (
     ParamVal,
     SelectVal,
 )
+from .core_types import BOOL, CoreType, TTuple
 
 
 @dataclass(frozen=True)

@@ -27,10 +27,12 @@ class TBitVec(CoreType):
 
 @dataclass(frozen=True)
 class TFloat(CoreType):
-    """Exact real-modeled floating point (matching s-imp's Z3 RealSort)."""
+    """Floating-point type (modeled as exact Real or IEEE-754 bit-exact depending on mode)."""
+
+    bits: int = 32
 
     def __str__(self) -> str:
-        return "float"
+        return "float" if self.bits == 32 else f"f{self.bits}"
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,17 @@ class TSym(CoreType):
 
 
 @dataclass(frozen=True)
+class TVector(CoreType):
+    """Fixed-length SIMD / shader vector type (e.g., V2F32, V3U32, V4F32, V2Bool)."""
+
+    elem: CoreType
+    lanes: int
+
+    def __str__(self) -> str:
+        return f"vec<{self.elem}x{self.lanes}>"
+
+
+@dataclass(frozen=True)
 class TPtr(CoreType):
     """Provenance-carrying pointer type with optional address space and TBAA tag."""
 
@@ -65,7 +78,7 @@ class TPtr(CoreType):
 
 @dataclass(frozen=True)
 class TMem(CoreType):
-    """Explicit Memory-SSA state token for a memory region or global heap."""
+    """Explicit Memory-SSA / effect state token for a memory region or global heap."""
 
     region: str = "global"
 
@@ -114,10 +127,14 @@ class TVoid(CoreType):
 
 BOOL = TBool()
 INT = TInt()
+BV16 = TBitVec(16)
 BV32 = TBitVec(32)
 BV64 = TBitVec(64)
-FLOAT = TFloat()
+F16 = TFloat(16)
+FLOAT = TFloat(32)
+F64 = TFloat(64)
 STR = TStr()
 MEM = TMem("global")
+TOKEN = TMem("effect")
 PYOBJ = TSym("PyObj")
 VOID = TVoid()

@@ -2,7 +2,7 @@ import time
 from dataclasses import dataclass, field
 
 from .aliasing import AliasPolicy, normalize_memory_ssa, peel_transparent
-from .core_types import BOOL, INT, CoreType, TPtr
+from .axioms import AxiomStore
 from .ir import (
     ConstVal,
     CoreFunc,
@@ -20,6 +20,7 @@ from .ir import (
     val_tree_size,
 )
 from .op_registry import OpRegistry, OpTrait
+from .core_types import BOOL, FLOAT, INT, CoreType, TBitVec, TPtr
 from .z3_backend import CoreZ3Backend
 
 
@@ -162,10 +163,12 @@ class CoreSSAAntiUnifier:
         self,
         reg: OpRegistry,
         alias_policy: AliasPolicy | None = None,
+        axioms: AxiomStore | None = None,
         z3_timeout_ms: int = 500,
     ):
         self.reg = reg
         self.alias_policy = alias_policy or AliasPolicy()
+        self.axioms = axioms
         self.z3_timeout_ms = z3_timeout_ms
         self.z3 = CoreZ3Backend(self.reg, self.alias_policy)
 
@@ -175,7 +178,7 @@ class CoreSSAAntiUnifier:
         self.loops_proved_unbounded = 0
         self.obligations: list[AUObligation] = []
         self.proved_lhs: set[CoreVal] = set()
-        self._canon_cache: dict[CoreVal, CoreVal] = {}
+        self._visited_pairs: set[tuple[int, int]] = set()
         self.counterexample: str | None = None
 
     def _fresh_hole(self) -> str:
@@ -191,16 +194,26 @@ class CoreSSAAntiUnifier:
         self.obligations.append(AUObligation(hid, lhs.pretty()[:80], rhs.pretty()[:80], method))
         return hid
 
-    def canonicalize(self, v: CoreVal, assumptions: list[CoreVal]) -> CoreVal:
-        """Apply local sound equational canonicalizations driven by `OpRegistry` and `AliasPolicy`."""
+    def canonicalize(self, v: CoreVal, assumptions: list[CoreVal], _memo: dict[int, tuple[CoreVal, CoreVal]] | None = None) -> CoreVal:
+        """Apply local sound equational canonicalizations driven by `OpRegistry` and `AliasPolicy` (per-call DAG-memoized)."""
+        if _memo is None:
+            _memo = {}
+        vid = id(v)
+        if vid in _memo:
+            return _memo[vid][1]
+        res = self._canonicalize_impl(v, assumptions, _memo)
+        _memo[vid] = (v, res)
+        return res
+
+    def _canonicalize_impl(self, v: CoreVal, assumptions: list[CoreVal], _memo: dict[int, tuple[CoreVal, CoreVal]]) -> CoreVal:
         v = peel_transparent(v, self.reg)
         if isinstance(v, (ConstVal, ParamVal, SymVal, HoleVal)):
             return v
 
         if isinstance(v, SelectVal):
-            c = self.canonicalize(v.cond, assumptions)
-            t = self.canonicalize(v.then_val, assumptions)
-            e = self.canonicalize(v.else_val, assumptions)
+            c = self.canonicalize(v.cond, assumptions, _memo)
+            t = self.canonicalize(v.then_val, assumptions, _memo)
+            e = self.canonicalize(v.else_val, assumptions, _memo)
             if _is_const_equal(c, True):
                 return t
             if _is_const_equal(c, False):
@@ -217,7 +230,7 @@ class CoreSSAAntiUnifier:
 
             # Memory-SSA & pointer GEP normalization
             if v.op in ("ptr.gep", "mem.load", "mem.store"):
-                canon_args = tuple(self.canonicalize(a, assumptions) for a in v.args)
+                canon_args = tuple(self.canonicalize(a, assumptions, _memo) for a in v.args)
                 rebuilt = OpApp(v.op, canon_args, v.ty, v.attrs)
                 return normalize_memory_ssa(rebuilt, self.reg, self.alias_policy)
 
@@ -225,7 +238,7 @@ class CoreSSAAntiUnifier:
                 raw_flat = self._flatten_op(v, v.op)
                 canon_flat: list[CoreVal] = []
                 for item in raw_flat:
-                    c_item = self.canonicalize(item, assumptions)
+                    c_item = self.canonicalize(item, assumptions, _memo)
                     canon_flat.extend(self._flatten_op(c_item, v.op))
                 if spec.has_absorbing:
                     for a in canon_flat:
@@ -238,10 +251,15 @@ class CoreSSAAntiUnifier:
                     return reduced[0]
                 if reduced:
                     reduced.sort(key=lambda item: item.pretty())
-                    return self._rebuild_nary(v.op, reduced, v.ty)
+                    rebuilt_ac = self._rebuild_nary(v.op, reduced, v.ty)
+                    if self.axioms is not None:
+                        rw_ac, fired_ac = self.axioms.apply_rewrites(rebuilt_ac, self.reg)
+                        if fired_ac and rw_ac != rebuilt_ac:
+                            return self.canonicalize(rw_ac, assumptions, _memo)
+                    return rebuilt_ac
                 return v
 
-            canon_args = tuple(self.canonicalize(a, assumptions) for a in v.args)
+            canon_args = tuple(self.canonicalize(a, assumptions, _memo) for a in v.args)
 
             # Involution: f(f(x)) -> x
             if spec.is_involution and len(canon_args) == 1:
@@ -252,7 +270,7 @@ class CoreSSAAntiUnifier:
                 inv_spec = self.reg.inverse_for_unary(v.op)
                 if inv_spec and isinstance(inner, OpApp) and inner.op == inv_spec.forward_op and not inv_spec.nonzero_rhs:
                     neg_children = tuple(
-                        self.canonicalize(OpApp(v.op, (c,), c.ty), assumptions) for c in inner.args
+                        self.canonicalize(OpApp(v.op, (c,), c.ty), assumptions, _memo) for c in inner.args
                     )
                     return OpApp(inv_spec.forward_op, neg_children, v.ty, inner.attrs)
                 return OpApp(v.op, canon_args, v.ty, v.attrs)
@@ -284,8 +302,8 @@ class CoreSSAAntiUnifier:
                         if fwd_spec.has_identity:
                             return ConstVal(fwd_spec.identity, v.ty)  # type: ignore[arg-type]
                     if inv_bin.unary_inverse:
-                        neg_b = self.canonicalize(OpApp(inv_bin.unary_inverse, (b,), b.ty), assumptions)
-                        return self.canonicalize(OpApp(inv_bin.forward_op, (a, neg_b), v.ty), assumptions)
+                        neg_b = self.canonicalize(OpApp(inv_bin.unary_inverse, (b,), b.ty), assumptions, _memo)
+                        return self.canonicalize(OpApp(inv_bin.forward_op, (a, neg_b), v.ty), assumptions, _memo)
 
             # Identity / absorbing checks for binary/n-ary ops
             if spec.has_absorbing:
@@ -313,7 +331,12 @@ class CoreSSAAntiUnifier:
                     return filtered[0]
                 canon_args = tuple(filtered)
 
-            return OpApp(v.op, canon_args, v.ty, v.attrs)
+            res_node: CoreVal = OpApp(v.op, canon_args, v.ty, v.attrs)
+            if self.axioms is not None:
+                rewritten, fired = self.axioms.apply_rewrites(res_node, self.reg)
+                if fired and rewritten != res_node:
+                    return self.canonicalize(rewritten, assumptions, _memo)
+            return res_node
 
         return v
 
@@ -399,7 +422,9 @@ class CoreSSAAntiUnifier:
         self, lhs: CoreVal, rhs: CoreVal, assumptions: list[CoreVal]
     ) -> tuple[bool, CoreVal]:
         self.z3_leaf_calls += 1
-        ok, cex = self.z3.prove_equal(lhs, rhs, assumptions=assumptions, timeout_ms=self.z3_timeout_ms)
+        _ = self.z3.to_z3(lhs); _ = self.z3.to_z3(rhs)
+        extra_z3 = self.axioms.collect_z3_axioms(self.z3, lhs, rhs) if self.axioms else []
+        ok, cex = self.z3.prove_equal(lhs, rhs, assumptions=assumptions, extra_z3_assumptions=extra_z3, timeout_ms=self.z3_timeout_ms)
         if ok:
             hid = self._record(lhs, rhs, "z3_leaf")
             fvs = tuple(sorted(free_param_names(lhs) | free_param_names(rhs)))
@@ -418,6 +443,9 @@ class CoreSSAAntiUnifier:
         Returns `(equivalent, generalization_template)`.
         """
         assumptions = assumptions or []
+        if raw_l is raw_r:
+            self.proved_lhs.add(raw_l)
+            return True, raw_l
 
         # 1. Peel transparent SSA moves/intros
         pl = peel_transparent(raw_l, self.reg)
@@ -428,7 +456,7 @@ class CoreSSAAntiUnifier:
         l = self.canonicalize(pl, assumptions)
         r = self.canonicalize(pr, assumptions)
 
-        if l == r:
+        if l is r or l == r:
             if peeled:
                 self._record(raw_l, raw_r, "move_peel")
             elif l != pl or r != pr:

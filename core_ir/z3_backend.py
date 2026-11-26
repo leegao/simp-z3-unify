@@ -1,6 +1,19 @@
 import z3
 
 from .aliasing import AliasPolicy, AliasRelation, decompose_pointer
+from .ir import (
+    ConstVal,
+    CoreVal,
+    HoleVal,
+    LoopOutVal,
+    LoopVal,
+    OpApp,
+    ParamVal,
+    SelectVal,
+    SymVal,
+    subst_val,
+)
+from .op_registry import OpRegistry
 from .core_types import (
     BOOL,
     FLOAT,
@@ -14,19 +27,19 @@ from .core_types import (
     TStruct,
     TSym,
     TTuple,
+    TVector,
 )
-from .ir import (
-    ConstVal,
-    CoreVal,
-    HoleVal,
-    LoopOutVal,
-    LoopVal,
-    OpApp,
-    ParamVal,
-    SelectVal,
-    SymVal,
-)
-from .op_registry import OpRegistry
+
+
+
+def _as_bool_z3(x: z3.ExprRef) -> z3.BoolRef:
+    if z3.is_bool(x):
+        return x
+    if z3.is_bv(x):
+        return x != z3.BitVecVal(0, x.size())
+    if z3.is_int(x):
+        return x != 0
+    return z3.BoolVal(True)
 
 
 class CoreZ3Backend:
@@ -86,6 +99,8 @@ class CoreZ3Backend:
             return z3.ArraySort(self.sort_of(ty.key), self.sort_of(ty.elem))
         if isinstance(ty, TStruct):
             return self._get_struct_info(ty)[0]
+        if isinstance(ty, TVector):
+            return z3.ArraySort(z3.IntSort(), self.sort_of(ty.elem))
         if isinstance(ty, TTuple):
             return self.sym_sort("Tuple_" + "_".join(str(e) for e in ty.elems))
         return z3.IntSort()
@@ -131,12 +146,12 @@ class CoreZ3Backend:
     def collect_aliasing_axioms(self, vals: list[CoreVal]) -> list[z3.BoolRef]:
         """Generate Z3 provenance-disjointness axioms implied by `AliasPolicy` for all pointers in `vals`."""
         ptrs: list[CoreVal] = []
-        seen: set[CoreVal] = set()
+        seen: set[int] = set()
 
         def walk(v: CoreVal) -> None:
-            if v in seen:
+            if id(v) in seen:
                 return
-            seen.add(v)
+            seen.add(id(v))
             if isinstance(v.ty, TPtr):
                 ptrs.append(v)
             if isinstance(v, OpApp):
@@ -173,9 +188,19 @@ class CoreZ3Backend:
                         axioms.append(self._base_const(d1.base_id) != self._base_const(d2.base_id))
         return axioms
 
-    def to_z3(self, v: CoreVal, env: dict[str, z3.ExprRef] | None = None) -> z3.ExprRef:
-        """Translate a CoreSSA-IR value into a Z3 expression."""
+    def to_z3(self, v: CoreVal, env: dict[str, z3.ExprRef] | None = None, _memo: dict[int, z3.ExprRef] | None = None) -> z3.ExprRef:
+        """Translate a CoreSSA-IR value into a Z3 expression (DAG-memoized O(|V|))."""
         env = env or {}
+        if _memo is None:
+            _memo = {}
+        if not env and id(v) in _memo:
+            return _memo[id(v)][1]
+        res = self._to_z3_impl(v, env, _memo)
+        if not env:
+            _memo[id(v)] = (v, res)
+        return res
+
+    def _to_z3_impl(self, v: CoreVal, env: dict[str, z3.ExprRef], _memo: dict[int, z3.ExprRef]) -> z3.ExprRef:
 
         if isinstance(v, ConstVal):
             if v.ty == BOOL:
@@ -219,15 +244,18 @@ class CoreZ3Backend:
             return z3.Const(f"hole_{v.hole_id}", self.sort_of(v.ty))
 
         if isinstance(v, SelectVal):
-            c = self.to_z3(v.cond, env)
-            t = self.to_z3(v.then_val, env)
-            e = self.to_z3(v.else_val, env)
+            c = _as_bool_z3(self.to_z3(v.cond, env, _memo))
+            t = self.to_z3(v.then_val, env, _memo)
+            e = self.to_z3(v.else_val, env, _memo)
+            if t.sort() != e.sort():
+                uf = self._get_uf(f"coerce_{e.sort()}_to_{t.sort()}", [e.sort()], t.sort())
+                e = uf(e)
             return z3.If(c, t, e)
 
         if isinstance(v, LoopOutVal):
             # Bounded unrolling translation when a LoopOutVal reaches Z3 directly
             lp = v.loop
-            cur_vals = [self.to_z3(a, env) for a in lp.init_vals]
+            cur_vals = [self.to_z3(a, env, _memo) for a in lp.init_vals]
             for _ in range(lp.unroll_hint):
                 step_env = dict(env)
                 for p, cv in zip(lp.iter_params, cur_vals):
@@ -240,9 +268,11 @@ class CoreZ3Backend:
         if isinstance(v, OpApp):
             spec = self.reg.get(v.op)
             if spec.is_transparent and len(v.args) == 1:
-                return self.to_z3(v.args[0], env)
+                return self.to_z3(v.args[0], env, _memo)
 
-            zargs = [self.to_z3(a, env) for a in v.args]
+            zargs = [self.to_z3(a, env, _memo) for a in v.args]
+            if spec.z3_builder is not None:
+                return spec.z3_builder(zargs, v.attrs, v.ty, self)
             zk = spec.z3_kind
 
             if zk == "add":
@@ -264,11 +294,11 @@ class CoreZ3Backend:
             if zk == "recip":
                 return z3.RealVal(1) / zargs[0]
             if zk == "and":
-                return z3.And(*zargs)
+                return z3.And(*[_as_bool_z3(a) for a in zargs])
             if zk == "or":
-                return z3.Or(*zargs)
+                return z3.Or(*[_as_bool_z3(a) for a in zargs])
             if zk == "not":
-                return z3.Not(zargs[0])
+                return z3.Not(_as_bool_z3(zargs[0]))
             if zk == "xor":
                 res = zargs[0]
                 for a in zargs[1:]:
@@ -397,6 +427,8 @@ class CoreZ3Backend:
 
         zl = self.to_z3(lhs)
         zr = self.to_z3(rhs)
+        if zl.sort() != zr.sort():
+            return False, f'sort mismatch: {zl.sort()} vs {zr.sort()}'
         s.add(zl != zr)
         res = s.check()
         if res == z3.unsat:

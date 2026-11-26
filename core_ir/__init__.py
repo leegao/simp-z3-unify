@@ -1,10 +1,28 @@
-from .aliasing import (
-    AliasPolicy,
-    AliasRelation,
-    decompose_pointer,
-    normalize_memory_ssa,
-    peel_transparent,
+from .axioms import AxiomStore, ExtensionalAxiom, FailedObligation, FalsificationRecord, ProofSession, build_gpu_axiom_store
+from .gpu_dialect import build_gpu_registry
+from .lower_spirv import lower_spirv_dis_to_core
+from .lower_valhall_ssa import CoreShaderProgram, ShaderExecEnv, lower_valhall_ssa_to_core, parse_valhall_ssa_text
+from .aliasing import AliasPolicy, AliasRelation, decompose_pointer, normalize_memory_ssa, peel_transparent
+from .equational_au import AUObligation, CoreAUResult, CoreSSAAntiUnifier
+from .ir import (
+    ConstVal,
+    CoreFunc,
+    CoreModule,
+    CoreVal,
+    HoleVal,
+    LoopOutVal,
+    LoopVal,
+    OpApp,
+    ParamVal,
+    SelectVal,
+    SymVal,
+    optimal_tree_cover_cost,
+    subst_val,
+    val_tree_size,
 )
+from .lower_cfg import CFGBlock, CFGBr, CFGCondBr, CFGFunction, CFGInstr, CFGPhi, CFGRet, lower_cfg_to_core
+from .lower_simp import SimpToCoreLowerer, lower_simp_type
+from .op_registry import InverseSpec, OpRegistry, OpSpec, OpTrait, build_default_registry
 from .core_types import (
     BOOL,
     BV32,
@@ -29,56 +47,15 @@ from .core_types import (
     TTuple,
     TVoid,
 )
-from .equational_au import AUObligation, CoreAUResult, CoreSSAAntiUnifier
-from .ir import (
-    ConstVal,
-    CoreFunc,
-    CoreModule,
-    CoreVal,
-    HoleVal,
-    LoopOutVal,
-    LoopVal,
-    OpApp,
-    ParamVal,
-    SelectVal,
-    SymVal,
-    optimal_tree_cover_cost,
-    subst_val,
-    val_tree_size,
-)
-from .lower_cfg import (
-    CFGBlock,
-    CFGBr,
-    CFGCondBr,
-    CFGFunction,
-    CFGInstr,
-    CFGPhi,
-    CFGRet,
-    lower_cfg_to_core,
-)
-from .lower_simp import SimpToCoreLowerer, lower_simp_type
-from .op_registry import (
-    InverseSpec,
-    OpRegistry,
-    OpSpec,
-    OpTrait,
-    build_default_registry,
-)
 from .z3_backend import CoreZ3Backend
 
 __all__ = [
+    "AliasPolicy",
+    "AliasRelation",
+    "AUObligation",
     "BOOL",
     "BV32",
     "BV64",
-    "FLOAT",
-    "INT",
-    "MEM",
-    "PYOBJ",
-    "STR",
-    "VOID",
-    "AUObligation",
-    "AliasPolicy",
-    "AliasRelation",
     "CFGBlock",
     "CFGBr",
     "CFGCondBr",
@@ -94,15 +71,20 @@ __all__ = [
     "CoreType",
     "CoreVal",
     "CoreZ3Backend",
+    "FLOAT",
     "HoleVal",
+    "INT",
     "InverseSpec",
     "LoopOutVal",
     "LoopVal",
+    "MEM",
     "OpApp",
     "OpRegistry",
     "OpSpec",
     "OpTrait",
+    "PYOBJ",
     "ParamVal",
+    "STR",
     "SelectVal",
     "SimpToCoreLowerer",
     "SymVal",
@@ -118,6 +100,7 @@ __all__ = [
     "TSym",
     "TTuple",
     "TVoid",
+    "VOID",
     "build_default_registry",
     "decompose_pointer",
     "lower_cfg_to_core",

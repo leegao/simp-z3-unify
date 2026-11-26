@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .core_types import INT, TPtr
 from .ir import ConstVal, CoreVal, OpApp, ParamVal, SymVal
 from .op_registry import OpRegistry
+from .core_types import INT, TPtr
 
 
 class AliasRelation(Enum):

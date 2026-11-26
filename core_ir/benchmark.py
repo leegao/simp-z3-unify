@@ -8,7 +8,15 @@ from core_ir import (
     FLOAT,
     INT,
     MEM,
+    STR,
     AliasPolicy,
+    CFGBlock,
+    CFGBr,
+    CFGCondBr,
+    CFGFunction,
+    CFGInstr,
+    CFGPhi,
+    CFGRet,
     ConstVal,
     CoreSSAAntiUnifier,
     CoreZ3Backend,
@@ -21,6 +29,7 @@ from core_ir import (
     TSym,
     TTuple,
     build_default_registry,
+    lower_cfg_to_core,
 )
 from simp.passes import const_fold_pass, cse_pass, dce_pass
 from simp.self_parser import build_self_hosted_simp_parser

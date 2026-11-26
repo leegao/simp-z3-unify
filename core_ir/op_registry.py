@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Flag, auto
+from typing import Any, Callable
 
 
 class OpTrait(Flag):
@@ -18,6 +19,9 @@ class OpTrait(Flag):
     MEM_WRITE = auto()         # memory store: (mem, ptr, val) -> mem
     MEM_ALLOC = auto()         # provenance-fresh region allocation
     PTR_OFFSET = auto()        # pointer arithmetic: gep(gep(p, a), b) == gep(p, a + b)
+    LANE_OP = auto()           # GPU subgroup / quad / lane-dependent operation
+    EFFECT_BARRIER = auto()    # ordered memory/control barrier, atomic, or discard effect
+    BITCAST = auto()           # representation-preserving bitcast
     PURE = auto()              # side-effect-free operation
 
     AC = ASSOC | COMM
@@ -25,15 +29,7 @@ class OpTrait(Flag):
 
 @dataclass(frozen=True)
 class InverseSpec:
-    """Declares an inverse relationship for a binary or unary operator.
-
-    For a group/abelian-group-like pair (e.g. add / sub / neg, or mul / div / inv):
-      - `forward_op`: the canonical associative operation (e.g., "add", "mul")
-      - `inverse_binop`: the binary inverse operation (e.g., "sub", "div"), where
-        `inverse_binop(a, b) == forward_op(a, unary_inverse(b))`
-      - `unary_inverse`: the unary inverse operation (e.g., "neg", "recip"), if any
-      - `nonzero_rhs`: if True, cancellation requires proving `b != 0` (e.g., div/mul)
-    """
+    """Declares an inverse relationship for a binary or unary operator."""
 
     forward_op: str
     inverse_binop: str | None = None
@@ -43,7 +39,9 @@ class InverseSpec:
 
 @dataclass(frozen=True)
 class OpSpec:
-    """Metadata and equational annotations for a single CoreSSA-IR operation."""
+    """Metadata, equational annotations, optional Z3-counterpart aliasing, and
+    optional concrete constant-folding evaluator for a single CoreSSA-IR operation.
+    """
 
     name: str
     traits: OpTrait = OpTrait.PURE
@@ -52,7 +50,9 @@ class OpSpec:
     absorbing: object = None
     has_absorbing: bool = False
     inverse: InverseSpec | None = None
-    z3_kind: str | None = None  # Built-in Z3 lowering tag, or None for rigid UF
+    z3_kind: str | None = None
+    z3_builder: Callable[..., Any] | None = field(default=None, compare=False, hash=False)
+    concrete_eval: Callable[..., Any] | None = field(default=None, compare=False, hash=False)
 
     @property
     def is_ac(self) -> bool:
@@ -84,7 +84,7 @@ class OpSpec:
 
 
 class OpRegistry:
-    """Extensible registry of equational operation annotations for arbitrary IR dialects."""
+    """Extensible registry of equational operation annotations, Z3 aliases, and concrete folders."""
 
     def __init__(self):
         self._ops: dict[str, OpSpec] = {}
@@ -99,10 +99,27 @@ class OpRegistry:
             if spec.inverse.unary_inverse:
                 self._inv_unary_to_forward[spec.inverse.unary_inverse] = spec.inverse
 
+    def alias_z3(self, op_name: str, builder: Callable[..., Any]) -> None:
+        """Attach or override a Z3-counterpart builder for an existing or new op."""
+        cur = self.get(op_name)
+        self.register(
+            OpSpec(
+                name=cur.name,
+                traits=cur.traits,
+                identity=cur.identity,
+                has_identity=cur.has_identity,
+                absorbing=cur.absorbing,
+                has_absorbing=cur.has_absorbing,
+                inverse=cur.inverse,
+                z3_kind=cur.z3_kind,
+                z3_builder=builder,
+                concrete_eval=cur.concrete_eval,
+            )
+        )
+
     def get(self, name: str) -> OpSpec:
         if name in self._ops:
             return self._ops[name]
-        # Any unregistered op defaults to a rigid uninterpreted function (safe by congruence)
         return OpSpec(name=name, traits=OpTrait.RIGID_UF | OpTrait.PURE, z3_kind=None)
 
     def has(self, name: str) -> bool:
@@ -128,11 +145,9 @@ def build_default_registry() -> OpRegistry:
     """Construct the standard CoreSSA-IR kernel operation registry."""
     reg = OpRegistry()
 
-    # --- SSA Intro / Move / Copy / No-op Cast (transparent under anti-unification) ---
     for mv in ("ssa.mov", "ssa.copy", "ssa.intro", "ssa.cast_noop", "ssa.freeze"):
         reg.register(OpSpec(mv, OpTrait.TRANSPARENT_MOVE | OpTrait.PURE, z3_kind="identity"))
 
-    # --- Arithmetic (AC + Inverses + Identities) ---
     add_inv = InverseSpec(forward_op="add", inverse_binop="sub", unary_inverse="neg", nonzero_rhs=False)
     reg.register(OpSpec("add", OpTrait.AC | OpTrait.PURE, identity=0, has_identity=True, inverse=add_inv, z3_kind="add"))
     reg.register(OpSpec("sub", OpTrait.PURE, identity=0, has_identity=True, inverse=add_inv, z3_kind="sub"))
@@ -154,7 +169,6 @@ def build_default_registry() -> OpRegistry:
     reg.register(OpSpec("div", OpTrait.PURE, identity=1, has_identity=True, inverse=mul_inv, z3_kind="div"))
     reg.register(OpSpec("recip", OpTrait.INVOLUTION | OpTrait.PURE, inverse=mul_inv, z3_kind="recip"))
 
-    # --- Bitwise / Boolean Algebra (AC, Idempotent, Self-Inverse, Involution) ---
     reg.register(
         OpSpec(
             "and",
@@ -188,7 +202,6 @@ def build_default_registry() -> OpRegistry:
         )
     )
 
-    # Bitvector arithmetic & bitwise
     bvadd_inv = InverseSpec(forward_op="bv.add", inverse_binop="bv.sub", unary_inverse="bv.neg", nonzero_rhs=False)
     reg.register(OpSpec("bv.add", OpTrait.AC | OpTrait.PURE, identity=0, has_identity=True, inverse=bvadd_inv, z3_kind="bv_add"))
     reg.register(OpSpec("bv.sub", OpTrait.PURE, identity=0, has_identity=True, inverse=bvadd_inv, z3_kind="bv_sub"))
@@ -199,15 +212,12 @@ def build_default_registry() -> OpRegistry:
     reg.register(OpSpec("bv.or", OpTrait.AC | OpTrait.IDEMPOTENT | OpTrait.PURE, identity=0, has_identity=True, z3_kind="bv_or"))
     reg.register(OpSpec("bv.not", OpTrait.INVOLUTION | OpTrait.PURE, z3_kind="bv_not"))
 
-    # --- Associative-Only (Non-Commutative) Operations ---
     reg.register(OpSpec("str.concat", OpTrait.ASSOC | OpTrait.PURE, identity="", has_identity=True, z3_kind="str_concat"))
     reg.register(OpSpec("str.len", OpTrait.PURE, z3_kind="str_len"))
     reg.register(OpSpec("str.substr", OpTrait.PURE, z3_kind="str_substr"))
-    # Matrix multiplication / sequence composition: associative ONLY, NOT commutative!
     reg.register(OpSpec("mat.mul", OpTrait.ASSOC | OpTrait.RIGID_UF | OpTrait.PURE, z3_kind=None))
     reg.register(OpSpec("seq.compose", OpTrait.ASSOC | OpTrait.RIGID_UF | OpTrait.PURE, z3_kind=None))
 
-    # --- Comparisons (eq/neq are commutative) ---
     reg.register(OpSpec("eq", OpTrait.COMM | OpTrait.PURE, z3_kind="eq"))
     reg.register(OpSpec("neq", OpTrait.COMM | OpTrait.PURE, z3_kind="neq"))
     reg.register(OpSpec("lt", OpTrait.PURE, z3_kind="lt"))
@@ -215,13 +225,11 @@ def build_default_registry() -> OpRegistry:
     reg.register(OpSpec("gt", OpTrait.PURE, z3_kind="gt"))
     reg.register(OpSpec("ge", OpTrait.PURE, z3_kind="ge"))
 
-    # --- Pointers & Memory-SSA ---
     reg.register(OpSpec("ptr.gep", OpTrait.PTR_OFFSET | OpTrait.PURE, z3_kind="ptr_gep"))
     reg.register(OpSpec("mem.load", OpTrait.MEM_READ | OpTrait.PURE, z3_kind="mem_load"))
     reg.register(OpSpec("mem.store", OpTrait.MEM_WRITE | OpTrait.PURE, z3_kind="mem_store"))
     reg.register(OpSpec("mem.alloc", OpTrait.MEM_ALLOC | OpTrait.PURE, z3_kind="mem_alloc"))
 
-    # --- Functional Arrays & Structs ---
     reg.register(OpSpec("arr.load", OpTrait.PURE, z3_kind="arr_load"))
     reg.register(OpSpec("arr.store", OpTrait.PURE, z3_kind="arr_store"))
     reg.register(OpSpec("struct.mk", OpTrait.PURE, z3_kind="struct_mk"))
@@ -230,7 +238,6 @@ def build_default_registry() -> OpRegistry:
     reg.register(OpSpec("tuple.mk", OpTrait.PURE, z3_kind="tuple_mk"))
     reg.register(OpSpec("tuple.get", OpTrait.PURE, z3_kind="tuple_get"))
 
-    # --- Opaque UFs / Transcendentals / Host-Python ---
     for fn_name in ("uf.exp", "uf.log", "uf.sin", "uf.cos", "uf.sqrt"):
         reg.register(OpSpec(fn_name, OpTrait.RIGID_UF | OpTrait.PURE, z3_kind=None))
 

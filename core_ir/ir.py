@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from .core_types import CoreType, TTuple
+from .core_types import BOOL, CoreType, TTuple
 
 
 class CoreVal:
@@ -86,8 +86,10 @@ class OpApp(CoreVal):
                 return v
         return default
 
-    def pretty(self) -> str:
-        parts = [a.pretty() for a in self.args]
+    def pretty(self, _d: int = 0) -> str:
+        if _d > 6:
+            return f"{self.op}(...)"
+        parts = [a.pretty(_d + 1) if isinstance(a, (OpApp, SelectVal)) else a.pretty() for a in self.args]
         if self.attrs:
             attr_str = ", ".join(f"{k}={v}" for k, v in self.attrs)
             parts.append(f"[{attr_str}]")
@@ -103,8 +105,13 @@ class SelectVal(CoreVal):
     else_val: CoreVal
     ty: CoreType
 
-    def pretty(self) -> str:
-        return f"Select({self.cond.pretty()}, {self.then_val.pretty()}, {self.else_val.pretty()})"
+    def pretty(self, _d: int = 0) -> str:
+        if _d > 6:
+            return "Select(...)"
+        c = self.cond.pretty(_d + 1) if isinstance(self.cond, (OpApp, SelectVal)) else self.cond.pretty()
+        t = self.then_val.pretty(_d + 1) if isinstance(self.then_val, (OpApp, SelectVal)) else self.then_val.pretty()
+        e = self.else_val.pretty(_d + 1) if isinstance(self.else_val, (OpApp, SelectVal)) else self.else_val.pretty()
+        return f"Select({c}, {t}, {e})"
 
 
 @dataclass(frozen=True)
@@ -186,23 +193,17 @@ def val_children(v: CoreVal) -> list[CoreVal]:
 
 
 def val_tree_size(v: CoreVal) -> int:
-    """Total node count of `v` viewed as an expression tree."""
-    if isinstance(v, (ConstVal, ParamVal, SymVal, HoleVal)):
-        return 1
-    if isinstance(v, OpApp):
-        return 1 + sum(val_tree_size(a) for a in v.args)
-    if isinstance(v, SelectVal):
-        return 1 + val_tree_size(v.cond) + val_tree_size(v.then_val) + val_tree_size(v.else_val)
-    if isinstance(v, LoopVal):
-        return (
-            1
-            + sum(val_tree_size(a) for a in v.init_vals)
-            + val_tree_size(v.cond)
-            + sum(val_tree_size(a) for a in v.body_next)
-        )
-    if isinstance(v, LoopOutVal):
-        return 1 + val_tree_size(v.loop)
-    return 1
+    """Unique DAG-memoized node count of `v` (O(|V|) even on shared SSA DAGs)."""
+    seen: set[int] = set()
+
+    def walk(x: CoreVal) -> int:
+        xid = id(x)
+        if xid in seen:
+            return 0
+        seen.add(xid)
+        return 1 + sum(walk(c) for c in val_children(x))
+
+    return walk(v)
 
 
 def subst_val(v: CoreVal, mapping: dict[str, CoreVal]) -> CoreVal:
@@ -241,37 +242,59 @@ def subst_val(v: CoreVal, mapping: dict[str, CoreVal]) -> CoreVal:
 
 
 def free_param_names(v: CoreVal) -> set[str]:
-    """Collect all free `ParamVal` names in `v`."""
-    if isinstance(v, ParamVal):
-        return {v.name}
-    if isinstance(v, (ConstVal, SymVal, HoleVal)):
-        return set()
-    if isinstance(v, OpApp):
-        out: set[str] = set()
-        for a in v.args:
-            out |= free_param_names(a)
-        return out
-    if isinstance(v, SelectVal):
-        return free_param_names(v.cond) | free_param_names(v.then_val) | free_param_names(v.else_val)
-    if isinstance(v, LoopVal):
-        bound = {p.name for p in v.iter_params}
-        out = set()
-        for a in v.init_vals:
-            out |= free_param_names(a)
-        inner = free_param_names(v.cond)
-        for b in v.body_next:
-            inner |= free_param_names(b)
-        return out | (inner - bound)
-    if isinstance(v, LoopOutVal):
-        return free_param_names(v.loop)
-    return set()
+    """Collect all free `ParamVal` names in `v` (DAG-memoized O(|V|))."""
+    memo: dict[int, set[str]] = {}
+
+    def walk(x: CoreVal) -> set[str]:
+        xid = id(x)
+        if xid in memo:
+            return memo[xid]
+        if isinstance(x, ParamVal):
+            res = {x.name}
+        elif isinstance(x, (ConstVal, SymVal, HoleVal)):
+            res = set()
+        elif isinstance(x, OpApp):
+            res = set()
+            for a in x.args:
+                res |= walk(a)
+        elif isinstance(x, SelectVal):
+            res = walk(x.cond) | walk(x.then_val) | walk(x.else_val)
+        elif isinstance(x, LoopVal):
+            bound = {p.name for p in x.iter_params}
+            out: set[str] = set()
+            for a in x.init_vals:
+                out |= walk(a)
+            inner = walk(x.cond)
+            for b in x.body_next:
+                inner |= walk(b)
+            res = out | (inner - bound)
+        elif isinstance(x, LoopOutVal):
+            res = walk(x.loop)
+        else:
+            res = set()
+        memo[xid] = res
+        return res
+
+    return walk(v)
 
 
 def optimal_tree_cover_cost(v: CoreVal, proved_nodes: set[CoreVal]) -> int:
-    """Exact O(|T|) bottom-up BURS dynamic programming tree-covering cost."""
-    if v in proved_nodes:
-        return 1
-    children = val_children(v)
-    if not children:
-        return 1
-    return 1 + sum(optimal_tree_cover_cost(c, proved_nodes) for c in children)
+    """Exact O(|V|) memoized bottom-up BURS dynamic programming covering cost."""
+    memo: dict[int, int] = {}
+
+    def dp(x: CoreVal) -> int:
+        xid = id(x)
+        if xid in memo:
+            return memo[xid]
+        if x in proved_nodes:
+            memo[xid] = 1
+            return 1
+        children = val_children(x)
+        if not children:
+            memo[xid] = 1
+            return 1
+        res = 1 + sum(dp(c) for c in children)
+        memo[xid] = res
+        return res
+
+    return dp(v)

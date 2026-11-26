@@ -46,8 +46,7 @@ from simp.simp_ast import (
     Var,
     WhileStmt,
 )
-from simp.simp_types import FLOAT as SIMP_FLOAT
-from simp.simp_types import INT as SIMP_INT
+from simp.simp_types import FLOAT as SIMP_FLOAT, INT as SIMP_INT
 
 
 class TestCoreSSAAntiUnification(unittest.TestCase):

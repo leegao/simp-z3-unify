@@ -37,35 +37,29 @@ from simp.simp_ast import (
 )
 from simp.simp_types import (
     BOOL as SIMP_BOOL,
-)
-from simp.simp_types import (
     FLOAT as SIMP_FLOAT,
-)
-from simp.simp_types import (
     INT as SIMP_INT,
-)
-from simp.simp_types import (
     STR as SIMP_STR,
-)
-from simp.simp_types import (
     TArray as SimpArray,
-)
-from simp.simp_types import (
     TDict as SimpDict,
-)
-from simp.simp_types import (
     TPtr as SimpPtr,
-)
-from simp.simp_types import (
     TPyObj as SimpPyObj,
-)
-from simp.simp_types import (
     TStruct as SimpStruct,
-)
-from simp.simp_types import (
     Type as SimpType,
 )
 
+from .ir import (
+    ConstVal,
+    CoreFunc,
+    CoreModule,
+    CoreVal,
+    LoopOutVal,
+    LoopVal,
+    OpApp,
+    ParamVal,
+    SelectVal,
+    SymVal,
+)
 from .core_types import (
     BOOL,
     FLOAT,
@@ -79,18 +73,6 @@ from .core_types import (
     TStruct,
     TSym,
     TTuple,
-)
-from .ir import (
-    ConstVal,
-    CoreFunc,
-    CoreModule,
-    CoreVal,
-    LoopOutVal,
-    LoopVal,
-    OpApp,
-    ParamVal,
-    SelectVal,
-    SymVal,
 )
 
 _BINOP_MAP = {
