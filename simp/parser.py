@@ -19,28 +19,13 @@ of its children). The result is a fully-typed :class:`simp.ast.Program`.
 from __future__ import annotations
 
 import sys
-
-# Allow direct execution (``python simp/parser.py``) in addition to
-# ``python -m simp.parser``. When run directly, ``sys.path[0]`` is the ``simp/``
-# directory, which would shadow the stdlib ``ast``/``types`` modules with
-# ``simp/ast.py``/``simp/types.py``. Drop it, add the project root, and set
-# ``__package__`` so the relative imports below resolve.
-if __package__ in (None, ""):
-    import os
-
-    _script_dir = os.path.dirname(os.path.abspath(__file__))
-    _root = os.path.dirname(_script_dir)
-    sys.path[:] = [p for p in sys.path if os.path.abspath(p or os.getcwd()) != _script_dir]
-    sys.path.insert(0, _root)
-    __package__ = "simp"
-
-import ast as _pyast
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 
 from lark import Lark, Token, Tree
 from lark.exceptions import LarkError
 
+from . import ast as _pyast
 from .ast import (
     ArrLoad,
     ArrStoreStmt,
