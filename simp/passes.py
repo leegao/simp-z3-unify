@@ -1,6 +1,6 @@
 import copy
 
-from .ast_nodes import (
+from .ast import (
     ArrLoad,
     ArrStoreExpr,
     ArrStoreStmt,

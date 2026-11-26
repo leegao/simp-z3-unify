@@ -1,2 +1,2 @@
-from .ast_nodes import *
+from .ast import *
 from .types import *

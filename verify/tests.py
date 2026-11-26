@@ -1,6 +1,6 @@
 import unittest
 
-from .ast_nodes import (
+from .ast import (
     FuncDecl,
     Program,
     ReturnStmt,

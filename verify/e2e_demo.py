@@ -1,6 +1,6 @@
 from collections.abc import Callable
 
-from simp.ast_nodes import (
+from simp.ast import (
     ArrLoad,
     ArrStoreStmt,
     Assign,

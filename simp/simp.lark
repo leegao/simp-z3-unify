@@ -1,0 +1,127 @@
+%import common.WS
+
+program: top_level*
+
+?top_level: import_decl
+          | struct_decl
+          | func_decl
+
+// ---- Top-level declarations ----
+import_decl: "import" dotted_name "as" NAME            // PyImportDecl
+dotted_name: NAME ("." NAME)*
+
+struct_decl: "struct" NAME "{" struct_field ("," struct_field)* ","? "}"  // StructDecl
+struct_field: NAME ":" type
+
+func_decl: "fn" NAME "(" params? ")" ("->" type)? block  // FuncDecl (ret_ty defaults to void)
+params: param ("," param)*
+param: NAME ":" type
+
+block: "{" stmt* "}"
+
+// ---- Statements ----
+?stmt: let_stmt
+     | assign_stmt
+     | arr_store_stmt
+     | ptr_store_stmt
+     | if_stmt
+     | while_stmt
+     | return_stmt
+
+let_stmt: "let" NAME ":" type "=" expr ";"             // LetDecl
+assign_stmt: NAME "=" expr ";"                          // Assign
+arr_store_stmt: NAME "[" expr "]" "=" expr ";"          // ArrStoreStmt
+ptr_store_stmt: "*" expr "=" expr ";"                   // PtrStoreStmt
+if_stmt: "if" "(" expr ")" block ("else" block)?        // IfStmt
+while_stmt: "while" "(" expr ")" ("unroll" INT)? block  // WhileStmt (unroll_bound)
+return_stmt: "return" expr ";"                          // ReturnStmt
+
+// ---- Types ----
+type: "bool" -> t_bool
+    | "int" -> t_int
+    | "float" -> t_float
+    | "str" -> t_str
+    | "void" -> t_void
+    | "ptr" "<" type ">" -> t_ptr
+    | "array" "<" type ">" -> t_array
+    | "pyobj" ("<" NAME ">")? -> t_pyobj
+    | NAME -> t_struct
+
+// ---- Expressions (precedence: low -> high) ----
+?expr: ite_expr
+
+?ite_expr: or_expr "?" expr ":" ite_expr -> ite        // IteExpr
+         | or_expr
+
+?or_expr: or_expr "||" and_expr -> or_                  // BinOp "||"
+        | and_expr
+
+?and_expr: and_expr "&&" eq_expr -> and_                // BinOp "&&"
+         | eq_expr
+
+?eq_expr: eq_expr "==" rel_expr -> eq                   // BinOp "=="
+        | eq_expr "!=" rel_expr -> ne                   // BinOp "!="
+        | rel_expr
+
+?rel_expr: rel_expr "<" add_expr -> lt                  // BinOp "<"
+         | rel_expr "<=" add_expr -> le                 // BinOp "<="
+         | rel_expr ">" add_expr -> gt                  // BinOp ">"
+         | rel_expr ">=" add_expr -> ge                 // BinOp ">="
+         | add_expr
+
+?add_expr: add_expr "+" mul_expr -> add                 // BinOp "+"
+         | add_expr "-" mul_expr -> sub                 // BinOp "-"
+         | add_expr "++" mul_expr -> strcat             // StrConcat
+         | add_expr "@" mul_expr -> ptr_offset          // PtrOffset (pointer + offset)
+         | mul_expr
+
+?mul_expr: mul_expr "*" unary -> mul                    // BinOp "*"
+         | mul_expr "/" unary -> div                    // BinOp "/"
+         | unary
+
+?unary: "-" unary -> neg                                // UnOp "-"
+      | "!" unary -> not                                // UnOp "!"
+      | "*" unary -> deref                              // PtrDeref
+      | postfix
+
+postfix: primary
+       | postfix "[" expr "]" -> arr_load               // ArrLoad
+       | postfix "." NAME -> attr                       // FieldGet or PyAttr
+       | postfix "(" arglist? ")" -> call               // BuiltinCall / FuncCall / PyCall / PyMethodCall
+
+?primary: const
+        | var
+        | "(" expr ")"
+        | struct_init
+        | box
+        | unbox
+
+const: "true" -> true                                   // Const bool
+     | "false" -> false                                 // Const bool
+     | INT -> int                                       // Const int
+     | FLOAT -> float                                   // Const float
+     | STRING -> string                                 // Const str
+
+var: NAME                                               // Var or PyModuleRef
+
+struct_init: NAME "{" init_fields? "}"                  // StructInit
+init_fields: init_field ("," init_field)* ","?
+init_field: NAME ":" expr
+
+box: "box" "(" expr ")"                                 // PyBox
+unbox: "unbox" "<" type ">" "(" expr ")"                // PyUnbox
+
+arglist: expr ("," expr)*
+
+// ---- Terminals ----
+FLOAT.2: /[0-9]+\.[0-9]+/
+INT.1: /[0-9]+/
+NAME: /(?!(?:import|as|struct|fn|let|if|else|while|unroll|return|bool|int|float|str|void|ptr|array|pyobj|box|unbox|true|false)\b)[A-Za-z_][A-Za-z0-9_]*/
+STRING: /"([^"\\]|\\.)*"/
+
+LINE_COMMENT: /\/\/[^\n]*/
+BLOCK_COMMENT: /\/\*(.|\n)*?\*\//
+
+%ignore WS
+%ignore LINE_COMMENT
+%ignore BLOCK_COMMENT

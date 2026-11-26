@@ -1,7 +1,7 @@
 from verify.symexec import SymbolicExecutor
 from verify.unifier import verify_equiv_bu_wlau
 
-from .ast_nodes import (
+from .ast import (
     Assign,
     BinOp,
     Const,

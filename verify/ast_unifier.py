@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 import z3
 
-from simp.ast_nodes import (
+from simp.ast import (
     ArrLoad,
     ArrStoreExpr,
     ArrStoreStmt,
