@@ -19,9 +19,12 @@ of its children). The result is a fully-typed :class:`simp.ast.Program`.
 from __future__ import annotations
 
 import ast as _pyast
+import sys
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 
 from lark import Lark, Token, Tree
+from lark.exceptions import LarkError
 
 from .ast import (
     ArrLoad,
@@ -478,3 +481,76 @@ def parse(src: str) -> Program:
     if _DEFAULT_PARSER is None:
         _DEFAULT_PARSER = SIMPParser()
     return _DEFAULT_PARSER.parse(src)
+
+
+# --------------------------------------------------------------------------- #
+# Pretty-printing (ast.dump-style) + CLI
+# --------------------------------------------------------------------------- #
+
+
+def format_ast(obj: object, indent: int = 2, level: int = 0) -> str:
+    """Render a (dataclass) AST as an indented, ``ast.dump``-style string."""
+    pad = " " * (indent * level)
+    pad_in = " " * (indent * (level + 1))
+
+    if is_dataclass(obj) and not isinstance(obj, type):
+        name = type(obj).__name__
+        fs = fields(obj)
+        if not fs:
+            return f"{name}()"
+        lines = [f"{name}("]
+        for f in fs:
+            lines.append(f"{pad_in}{f.name}={format_ast(getattr(obj, f.name), indent, level + 1)},")
+        lines.append(f"{pad})")
+        return "\n".join(lines)
+
+    if isinstance(obj, list):
+        if not obj:
+            return "[]"
+        lines = ["["]
+        for item in obj:
+            lines.append(f"{pad_in}{format_ast(item, indent, level + 1)},")
+        lines.append(f"{pad}]")
+        return "\n".join(lines)
+
+    if isinstance(obj, tuple):
+        if not obj:
+            return "()"
+        lines = ["("]
+        for item in obj:
+            lines.append(f"{pad_in}{format_ast(item, indent, level + 1)},")
+        lines.append(f"{pad})")
+        return "\n".join(lines)
+
+    return repr(obj)
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    p = argparse.ArgumentParser(
+        prog="simp.parser",
+        description="Parse a .simp file and pretty-print its AST.",
+    )
+    p.add_argument("file", help="input .simp source file")
+    p.add_argument("-o", "--output", help="write to this file instead of stdout")
+    p.add_argument("--indent", type=int, default=2, help="indentation width (default: 2)")
+    args = p.parse_args(argv)
+
+    try:
+        src = Path(args.file).read_text()
+        prog = parse(src)
+    except (OSError, SIMPParseError, LarkError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    out = format_ast(prog, indent=args.indent)
+    if args.output:
+        Path(args.output).write_text(out + "\n")
+    else:
+        print(out)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

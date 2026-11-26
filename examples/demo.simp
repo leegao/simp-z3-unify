@@ -1,0 +1,15 @@
+import numpy as np
+
+struct Point { x: float, y: float }
+
+fn add(a: float, b: float) -> float {
+  return a + b;
+}
+
+fn main(x: float, flag: bool) -> float {
+  let p: Point = Point { x: x, y: 1.0 };
+  let t: pyobj = np.tanh(x);
+  let m: float = unbox<float>(t);
+  let z: float = flag ? add(m, p.x) : (x * 2.0);
+  return z;
+}
