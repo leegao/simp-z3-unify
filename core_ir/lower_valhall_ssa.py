@@ -444,6 +444,15 @@ def lower_valhall_ssa_to_core(
             outputs["__heap"] = new_heap
             return new_heap, new_heap, alive
 
+        if op == "AtomicRmw" and len(arg_vals) >= 3:
+            # Valhall AtomicRmw(addr, val, token) -> observable heap effect.
+            # Model as arr.store into the shared `__heap` channel so it matches
+            # the SPIR-V OpAtomicX lowering.
+            addr, val = arg_vals[0], arg_vals[1]
+            new_heap = OpApp("arr.store", (heap, addr, val), heap_ty)
+            outputs["__heap"] = new_heap
+            return OpApp("tuple.mk", (val, new_heap), TTuple((ty, heap_ty))), new_heap, alive
+
         if op == "TupleExtract" and len(arg_vals) == 1:
             src = arg_vals[0]
             idx = node.imm32

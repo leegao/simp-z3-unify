@@ -50,6 +50,20 @@ _SPV_OP_MAP: dict[str, str] = {
     "OpCopyObject": "spv.copy",
 }
 
+# SPIR-V atomic ops modeled as observable heap effects (arr.store into __heap).
+_SPV_ATOMIC_MAP: dict[str, str] = {
+    "OpAtomicIAdd": "vh.atomic_rmw",
+    "OpAtomicSMin": "vh.atomic_rmw",
+    "OpAtomicUMin": "vh.atomic_rmw",
+    "OpAtomicSMax": "vh.atomic_rmw",
+    "OpAtomicUMax": "vh.atomic_rmw",
+    "OpAtomicAnd": "vh.atomic_rmw",
+    "OpAtomicOr": "vh.atomic_rmw",
+    "OpAtomicXor": "vh.atomic_rmw",
+    "OpAtomicExchange": "vh.atomic_xchg",
+    "OpAtomicCompareExchange": "vh.atomic_cmpxchg",
+}
+
 
 def lower_spirv_dis_to_core(spv_text: str, name: str = "spv_shader") -> CoreShaderProgram:
     """Bonus adapter: lower textual SPIR-V disassembly (`spirv-dis` output) into CoreSSA-IR.
@@ -215,6 +229,15 @@ def lower_spirv_dis_to_core(spv_text: str, name: str = "spv_shader") -> CoreShad
                 elif op in _SPV_OP_MAP:
                     cargs = tuple(vals.get(o, SymVal(o, ty)) for o in operands)
                     vals[res_id] = OpApp(_SPV_OP_MAP[op], cargs, ty)
+                elif op in _SPV_ATOMIC_MAP and len(operands) >= 4:
+                    # OpAtomicX <result-type> <pointer> <scope> <semantics> <value>
+                    # Model the atomic as an observable heap effect (arr.store)
+                    # so it lands in the same `__heap` channel as Valhall AtomicRmw.
+                    addr = ptr_exprs.get(operands[0], vals.get(operands[0], SymVal(operands[0], BV64)))
+                    val = vals.get(operands[3], SymVal(operands[3], ty))
+                    heap = OpApp("arr.store", (heap, addr, val), heap_ty)
+                    outputs["__heap"] = heap
+                    vals[res_id] = val
                 else:
                     if op not in unsupported:
                         unsupported.append(op)
@@ -241,6 +264,10 @@ def lower_spirv_dis_to_core(spv_text: str, name: str = "spv_shader") -> CoreShad
                         addr = ptr_exprs.get(tgt, vals.get(tgt, SymVal(tgt, BV64)))
                         heap = OpApp("arr.store", (heap, addr, val), heap_ty)
                         outputs["__heap"] = heap
+            elif line.startswith("OpAtomic") and "=" in line:
+                # Assignment-form atomic (result = OpAtomicX ...): the heap
+                # effect was already recorded in the assignment handler above.
+                pass
             elif line.startswith("OpKill") or line.startswith("OpDemoteToHelperInvocation"):
                 outputs["__alive"] = ConstVal(False, BOOL)
 
